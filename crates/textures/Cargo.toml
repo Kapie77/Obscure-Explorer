@@ -1,0 +1,9 @@
+[package]
+name = "obscure-textures"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+obscure-core = { path = "../core" }
+image = { version = "0.25", default-features = false, features = ["png", "bmp", "tga", "jpeg"] }

@@ -1,0 +1,10 @@
+[package]
+name = "obscure-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+# Troque por `rev = "<commit>"` depois, para fixar a versão.
+hvp-archive = { git = "https://github.com/YouKnow-sys/obscure-hvp" }
+self_cell = "1"

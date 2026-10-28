@@ -1,0 +1,17 @@
+[package]
+name = "obscure-explorer"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+obscure-core = { path = "../core" }
+obscure-textures = { path = "../textures" }
+obscure-models = { path = "../models" }
+eframe = "0.29"
+rfd = "0.15"
+image = { version = "0.25", default-features = false, features = ["png"] }
+rodio = { version = "0.20", features = ["symphonia-all"] }
+lewton = "0.10"
+ureq = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
