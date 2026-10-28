@@ -3,7 +3,7 @@
 Read-only asset explorer (FModel style) for Obscure 1, Obscure 2 and Final Exam:
 browse, search, preview textures and extract files. No re-encoding / repacking.
 
-![image1](https://i.ibb.co/ymyDbnDz/obscureexplorer3.png)
+![image1](https://i.ibb.co/CpzByKc3/obscureexplorer3.png)
 ![image2](https://i.ibb.co/SDhxGNZN/obscureexplorer2.png)
 ![image3](https://i.ibb.co/zv6BMY9/obscure4.png)
 ![image3](https://i.ibb.co/27BdCLkh/obscure5.png)
