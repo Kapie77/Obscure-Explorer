@@ -3,6 +3,11 @@
 Read-only asset explorer (FModel style) for Obscure 1, Obscure 2 and Final Exam:
 browse, search, preview textures and extract files. No re-encoding / repacking.
 
+![image1](https://i.ibb.co/ymyDbnDz/obscureexplorer3.png)
+![image2](https://i.ibb.co/SDhxGNZN/obscureexplorer2.png)
+![image3](https://i.ibb.co/zv6BMY9/obscure4.png)
+![image3](https://i.ibb.co/27BdCLkh/obscure5.png)
+
 ## Usage
 
 1. `cargo run -p obscure-explorer --release`
@@ -54,8 +59,8 @@ The panel under the mouse pointer has the keyboard focus (clicking also sets it)
 
 ## Credits
 
-Texture formats come from the reverse-engineering work in
-[ObsCure-Texture-Editor](https://github.com/HeitorSpectre/ObsCure-Texture-Editor) (MIT; HeitorSpectre, Evil Trainer, marcos_haf)
-and [obscure-hvp](https://github.com/YouKnow-sys/obscure-hvp) (MIT; YouKnow-sys).
-Keep their copyright notices when porting code from them.
+Texture formats come from the reverse-engineering work in [ObsCure-Texture-Editor](https://github.com/HeitorSpectre/ObsCure-Texture-Editor) (MIT; HeitorSpectre, Evil Trainer, marcos_haf)
+
+The `.hvp` format comes from [obscure-hvp](https://github.com/YouKnow-sys/obscure-hvp) (MIT; YouKnow-sys).
+
 The `.zwo` format comes from [zwoBlender](https://github.com/Al-Hydra/zwoBlender) (Al-Hydra); check its license before redistributing.
