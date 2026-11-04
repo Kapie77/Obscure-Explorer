@@ -15,7 +15,8 @@ use obscure_core::Archive;
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
-pub const AUDIO_EXTS: &[&str] = &["wav", "ogg", "mp3", "flac"];
+/// `xwma` (Final Exam) has no Rust decoder: it is decoded through ffmpeg.
+pub const AUDIO_EXTS: &[&str] = &["wav", "ogg", "mp3", "flac", "xwma"];
 pub const VIDEO_EXTS: &[&str] = &["bik", "ogv"];
 
 pub fn is_audio_ext(ext: &str) -> bool {

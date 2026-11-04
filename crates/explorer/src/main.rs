@@ -1479,9 +1479,18 @@ impl App {
             }
         };
         let head: String = data.iter().take(16).map(|b| format!("{b:02x} ")).collect();
-        let mut result = AudioPlayer::from_file(data.clone());
+        // XWMA (Final Exam) cannot be decoded by rodio: it always goes through ffmpeg
+        let needs_ffmpeg = ext == "xwma";
+        if needs_ffmpeg && self.ffmpeg.is_none() {
+            self.ffmpeg = find_ffmpeg();
+        }
+        let mut result: Result<AudioPlayer, String> = if needs_ffmpeg {
+            Err("this format is decoded with ffmpeg".to_string())
+        } else {
+            AudioPlayer::from_file(data.clone())
+        };
         if result.is_err() {
-            // last resort: let ffmpeg decode it
+            // last resort (or the only way for XWMA): let ffmpeg decode it
             if let Some(ff) = &self.ffmpeg {
                 let file = self.temp.path_for(&format!("audio_{index}.{ext}"));
                 if std::fs::write(&file, &data).is_ok() {
@@ -1492,6 +1501,15 @@ impl App {
                     }
                     let _ = std::fs::remove_file(&file);
                 }
+                if needs_ffmpeg && result.is_err() {
+                    result = Err("ffmpeg could not decode this file".to_string());
+                }
+            } else if needs_ffmpeg {
+                self.ffmpeg_prompt = true;
+                result = Err(
+                    "XWMA audio needs ffmpeg. Set it up in the pop-up, then play the file again."
+                        .to_string(),
+                );
             }
         }
         let (audio, error) = match result {
@@ -2229,7 +2247,7 @@ fn type_info(ext: &str) -> (&'static str, Color32) {
         "dic" | "dip" => ("Texture pack", Color32::from_rgb(120, 86, 200)),
         "hvt" | "hvi" | "xbr" => ("Texture", Color32::from_rgb(120, 86, 200)),
         "bmp" | "tga" | "png" | "jpg" | "jpeg" => ("Image", Color32::from_rgb(150, 90, 190)),
-        "wav" | "ogg" | "mp3" | "flac" => ("Audio", Color32::from_rgb(30, 150, 150)),
+        "wav" | "ogg" | "mp3" | "flac" | "xwma" => ("Audio", Color32::from_rgb(30, 150, 150)),
         "bik" | "ogv" => ("Video", Color32::from_rgb(200, 70, 70)),
         "lng" => ("LNG (text)", Color32::from_rgb(60, 150, 90)),
         "cre" | "sen" | "sub" | "txt" | "log" | "ini" | "xml" | "cfg" | "json" | "csv" => {
@@ -3582,7 +3600,7 @@ impl eframe::App for App {
                     ui.label("Theme:");
                     if self.ffmpeg.is_none() {
                         ui.separator();
-                        if ui.button("Set up video support...").clicked() {
+                        if ui.button("Set up ffmpeg (video / XWMA)...").clicked() {
                             self.ffmpeg_prompt = true;
                             self.ffmpeg_declined = false;
                         }
@@ -4241,15 +4259,15 @@ impl App {
                 let (rect, _) = ui.allocate_exact_size(ctx.screen_rect().size(), Sense::click());
                 ui.painter().rect_filled(rect, 0.0, Color32::from_black_alpha(150));
             });
-        egui::Window::new("Video support needs ffmpeg")
+        egui::Window::new("ffmpeg is needed")
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
                 ui.set_max_width(460.0);
                 ui.label(
-                    "Videos (.bik and .ogv) are decoded with ffmpeg, a free and open-source tool \
-                     that is not bundled with this program.",
+                    "Videos (.bik and .ogv) and XWMA audio (.xwma) are decoded with ffmpeg, a free \
+                     and open-source tool that is not bundled with this program.",
                 );
                 ui.add_space(6.0);
                 if cfg!(windows) {
