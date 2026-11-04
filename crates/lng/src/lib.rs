@@ -135,7 +135,7 @@ fn ob2_to_txt(data: &[u8]) -> Result<String, LngError> {
 // ---------------------------------------------------------------- Obscure 1
 
 /// Windows-1252 decoding (the 0x80..0x9F range differs from Latin-1).
-fn cp1252(bytes: &[u8]) -> String {
+pub fn cp1252(bytes: &[u8]) -> String {
     bytes
         .iter()
         .map(|&b| match b {

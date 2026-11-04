@@ -1360,11 +1360,10 @@ impl App {
                 return;
             }
         };
-        if !looks_like_text(&data) {
-            return; // not really text: nothing to show
-        }
         let n = data.len().min(256 * 1024);
-        let mut text = String::from_utf8_lossy(&data[..n]).into_owned();
+        let Some(mut text) = decode_text(&data[..n]) else {
+            return; // not really text: nothing to show
+        };
         if data.len() > n {
             text.push_str("\n\n... (file truncated for display)");
         }
@@ -2221,7 +2220,7 @@ fn fmt_size(n: u64) -> String {
 fn is_text_ext(ext: &str) -> bool {
     matches!(
         ext,
-        "txt" | "log" | "ini" | "xml" | "cfg" | "json" | "csv" | "md" | "bat" | "inf" | "lng" | "cre" | "sen" | "sub"
+        "txt" | "log" | "ini" | "xml" | "cfg" | "json" | "csv" | "md" | "bat" | "inf" | "lng" | "cre" | "sen" | "sub" | "srt"
     )
 }
 
@@ -2250,6 +2249,7 @@ fn type_info(ext: &str) -> (&'static str, Color32) {
         "wav" | "ogg" | "mp3" | "flac" | "xwma" => ("Audio", Color32::from_rgb(30, 150, 150)),
         "bik" | "ogv" => ("Video", Color32::from_rgb(200, 70, 70)),
         "lng" => ("LNG (text)", Color32::from_rgb(60, 150, 90)),
+        "srt" => ("SRT (subtitles)", Color32::from_rgb(60, 150, 90)),
         "cre" | "sen" | "sub" | "txt" | "log" | "ini" | "xml" | "cfg" | "json" | "csv" => {
             ("Text", Color32::from_rgb(60, 150, 90))
         }
@@ -2259,6 +2259,34 @@ fn type_info(ext: &str) -> (&'static str, Color32) {
         "hoe" | "map" | "tm" | "noe" | "dat" => ("Data", Color32::from_rgb(70, 130, 140)),
         _ => ("File", Color32::from_rgb(90, 96, 110)),
     }
+}
+
+/// Text files come as UTF-8 (with or without BOM), UTF-16 (BOM) or an old 8-bit code page.
+fn decode_text(data: &[u8]) -> Option<String> {
+    if data.is_empty() {
+        return None;
+    }
+    if data.starts_with(&[0xFF, 0xFE]) || data.starts_with(&[0xFE, 0xFF]) {
+        let le = data[0] == 0xFF;
+        let units: Vec<u16> = data[2..]
+            .chunks_exact(2)
+            .map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) })
+            .collect();
+        return Some(String::from_utf16_lossy(&units));
+    }
+    let body = data.strip_prefix(&[0xEF, 0xBB, 0xBF][..]).unwrap_or(data);
+    if !looks_like_text(body) {
+        return None;
+    }
+    Some(match std::str::from_utf8(body) {
+        Ok(s) => s.to_string(),
+        // cut in the middle of a character at the end of the slice: the rest is still UTF-8
+        Err(e) if e.error_len().is_none() && body.len() - e.valid_up_to() < 4 => {
+            String::from_utf8_lossy(&body[..e.valid_up_to()]).into_owned()
+        }
+        // not UTF-8: an old Windows code page (accents in subtitles)
+        Err(_) => obscure_lng::cp1252(body),
+    })
 }
 
 fn looks_like_text(data: &[u8]) -> bool {
@@ -4401,6 +4429,17 @@ impl App {
 #[cfg(test)]
 mod text_search_tests {
     use super::*;
+
+    #[test]
+    fn decodes_the_usual_text_encodings() {
+        assert_eq!(decode_text(b"1\n00:00:01,000 --> 00:00:02,000\nHello").unwrap().lines().count(), 3);
+        assert_eq!(decode_text(&[0xEF, 0xBB, 0xBF, b'o', b'k']).unwrap(), "ok");
+        assert_eq!(decode_text(&[0xFF, 0xFE, b'h', 0, b'i', 0]).unwrap(), "hi");
+        assert_eq!(decode_text(&[b'c', b'a', b'f', 0xE9]).unwrap(), "caf\u{00E9}"); // Latin-1 / cp1252
+        assert_eq!(decode_text(&"caf\u{00E9}".as_bytes()[..4]).unwrap(), "caf"); // cut inside a character
+        assert!(decode_text(&[0, 1, 2, 3]).is_none());
+        assert!(decode_text(&[]).is_none());
+    }
 
     fn view(text: &str) -> TextView {
         TextView::new("t".to_string(), text.to_string(), None, false, None)
