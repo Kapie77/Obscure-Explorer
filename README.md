@@ -8,6 +8,8 @@ browse, search, preview textures and extract files. No re-encoding / repacking.
 ![image3](https://i.ibb.co/zv6BMY9/obscure4.png)
 ![image4](https://i.ibb.co/27BdCLkh/obscure5.png)
 ![image5](https://i.ibb.co/nszDqqpJ/obscure6.png)
+![image6](https://i.ibb.co/HfsppZVL/obscure7.png)
+![image7](https://i.ibb.co/209rFygw/obscure8.png)
 
 ## Usage
 
