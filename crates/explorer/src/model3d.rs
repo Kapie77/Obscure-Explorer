@@ -684,7 +684,10 @@ impl ModelViewer {
                             visible_tris
                         ));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Close (Esc)").clicked() {
+                            if super::icon_button(ui, super::Icon::Close, 30.0, &super::palette(true))
+                                .on_hover_text("Close (Esc)")
+                                .clicked()
+                            {
                                 open = false;
                             }
                             if ui.button("Frame (F)").clicked() {

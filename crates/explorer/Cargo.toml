@@ -8,6 +8,8 @@ license = "MIT"
 obscure-core = { path = "../core" }
 obscure-textures = { path = "../textures" }
 obscure-models = { path = "../models" }
+obscure-xmc = { path = "../xmc" }
+obscure-lng = { path = "../lng" }
 eframe = "0.29"
 rfd = "0.15"
 image = { version = "0.25", default-features = false, features = ["png"] }

@@ -178,6 +178,7 @@ enum Action {
     ClearSelection,
     ExportSelection,
     Export(Vec<ExpTarget>),
+    ExportPreset(Vec<ExpTarget>, ExportPreset),
     Up,
 }
 
@@ -223,6 +224,112 @@ struct TextView {
     name: String,
     text: String,
     open: bool,
+    /// Set for XMC files shown as XML (index of the file) so the view can be rebuilt.
+    xmc_source: Option<usize>,
+    xmc_missing: bool,
+    /// Set for LNG files shown as text (index of the file).
+    lng_source: Option<usize>,
+    /// Byte range of every line of `text` (without the line break).
+    lines: Vec<(usize, usize)>,
+    /// Search box: text, the query the matches were computed for, matches and the selected one.
+    query: String,
+    matches: Vec<LineMatch>,
+    current: usize,
+    /// Scroll to the selected match on the next frame.
+    jump: bool,
+}
+
+/// A search hit: line number and byte range inside that line.
+struct LineMatch {
+    line: usize,
+    start: usize,
+    end: usize,
+}
+
+const MAX_MATCHES: usize = 200_000;
+
+fn fold_char(c: char) -> char {
+    c.to_lowercase().next().unwrap_or(c)
+}
+
+impl TextView {
+    fn new(
+        name: String,
+        text: String,
+        xmc_source: Option<usize>,
+        xmc_missing: bool,
+        lng_source: Option<usize>,
+    ) -> Self {
+        let bytes = text.as_bytes();
+        let mut lines = Vec::new();
+        let mut start = 0usize;
+        for (i, b) in bytes.iter().enumerate() {
+            if *b == b'\n' {
+                let end = if i > start && bytes[i - 1] == b'\r' { i - 1 } else { i };
+                lines.push((start, end));
+                start = i + 1;
+            }
+        }
+        if start < text.len() || lines.is_empty() {
+            lines.push((start, text.len()));
+        }
+        Self {
+            name,
+            text,
+            open: true,
+            xmc_source,
+            xmc_missing,
+            lng_source,
+            lines,
+            query: String::new(),
+            matches: Vec::new(),
+            current: 0,
+            jump: false,
+        }
+    }
+
+    fn line(&self, i: usize) -> &str {
+        let (a, b) = self.lines[i];
+        &self.text[a..b]
+    }
+
+    /// Finds every occurrence of the query (case-insensitive) and selects the first one.
+    fn refresh_matches(&mut self) {
+        self.matches.clear();
+        self.current = 0;
+        let q: Vec<char> = self.query.chars().map(fold_char).collect();
+        if q.is_empty() {
+            return;
+        }
+        'lines: for (li, &(a, b)) in self.lines.iter().enumerate() {
+            let line = &self.text[a..b];
+            let chars: Vec<(usize, char)> = line.char_indices().map(|(o, c)| (o, fold_char(c))).collect();
+            let mut i = 0;
+            while i + q.len() <= chars.len() {
+                if chars[i..i + q.len()].iter().map(|x| x.1).eq(q.iter().copied()) {
+                    let start = chars[i].0;
+                    let end = if i + q.len() < chars.len() { chars[i + q.len()].0 } else { line.len() };
+                    self.matches.push(LineMatch { line: li, start, end });
+                    if self.matches.len() >= MAX_MATCHES {
+                        break 'lines;
+                    }
+                    i += q.len();
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        self.jump = !self.matches.is_empty();
+    }
+
+    fn step_match(&mut self, dir: isize) {
+        if self.matches.is_empty() {
+            return;
+        }
+        let n = self.matches.len() as isize;
+        self.current = ((self.current as isize + dir).rem_euclid(n)) as usize;
+        self.jump = true;
+    }
 }
 
 /// The full-window video player.
@@ -276,6 +383,18 @@ impl TreeRow {
 enum ExportKind {
     Raw,
     Png,
+    /// .xmc converted to .xml
+    Xml,
+    /// .lng converted to .txt
+    Txt,
+}
+
+/// Quick export buttons: the file as stored, converted, or both.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExportPreset {
+    Raw,
+    Converted,
+    Both,
 }
 
 #[derive(Clone, Copy)]
@@ -300,8 +419,12 @@ struct ExportDialog {
     n_files: usize,
     has_tex: bool,
     tex_only: bool,
+    has_xmc: bool,
+    has_lng: bool,
     raw: bool,
     png: bool,
+    xml: bool,
+    txt: bool,
     dest: Option<PathBuf>,
     job: Option<ExportJob>,
     message: Option<String>,
@@ -422,6 +545,8 @@ struct App {
     viewer: Option<Viewer>,
     text_view: Option<TextView>,
     model_viewer: Option<model3d::ModelViewer>,
+    xmc_dict: Option<obscure_xmc::Dictionary>,
+    xmc_dict_tried: bool,
     video: Option<VideoSession>,
     ff_download: Option<FfDownload>,
     selection: HashSet<String>,
@@ -478,6 +603,8 @@ impl Default for App {
             viewer: None,
             text_view: None,
             model_viewer: None,
+            xmc_dict: None,
+            xmc_dict_tried: false,
             video: None,
             ff_download: None,
             selection: HashSet::new(),
@@ -620,6 +747,59 @@ fn targets_from_selection(sel: &HashSet<String>, container: Option<usize>) -> Ve
         }
     }
     out
+}
+
+/// Names of the stored and converted formats of files that can be exported both ways.
+fn convert_labels(ext: &str) -> Option<(&'static str, &'static str)> {
+    match ext {
+        "xmc" => Some((".xmc", ".xml")),
+        "lng" => Some((".lng", ".txt")),
+        _ => None,
+    }
+}
+
+fn export_menu_entries(
+    ui: &mut egui::Ui,
+    ext: &str,
+    targets: Vec<ExpTarget>,
+    actions: &mut Vec<Action>,
+) {
+    if let Some((a, b)) = convert_labels(ext) {
+        if ui.button(format!("Export {a}")).clicked() {
+            actions.push(Action::ExportPreset(targets.clone(), ExportPreset::Raw));
+            ui.close_menu();
+        }
+        if ui.button(format!("Export {b}")).clicked() {
+            actions.push(Action::ExportPreset(targets.clone(), ExportPreset::Converted));
+            ui.close_menu();
+        }
+        if ui.button(format!("Export {a} + {b}")).clicked() {
+            actions.push(Action::ExportPreset(targets.clone(), ExportPreset::Both));
+            ui.close_menu();
+        }
+        ui.separator();
+    }
+    if ui.button("Export...").clicked() {
+        actions.push(Action::Export(targets));
+        ui.close_menu();
+    }
+}
+
+fn item_context_menu(
+    resp: &egui::Response,
+    item: &Item,
+    cwd: &[String],
+    env: &Env,
+    actions: &mut Vec<Action>,
+) {
+    let ext = match item {
+        Item::File { name, .. } => ext_of(name),
+        _ => String::new(),
+    };
+    resp.context_menu(|ui| {
+        let targets = export_targets_for(item, cwd, env);
+        export_menu_entries(ui, &ext, targets, actions);
+    });
 }
 
 fn export_targets_for(item: &Item, cwd: &[String], env: &Env) -> Vec<ExpTarget> {
@@ -824,6 +1004,10 @@ impl App {
             self.toggle_or_play_audio(index);
         } else if is_video_ext(&ext) {
             self.start_video(index, ctx, now);
+        } else if ext == "lng" {
+            self.open_lng(index);
+        } else if ext == "xmc" {
+            self.open_xmc(index);
         } else if is_text_ext(&ext) {
             self.open_text(index);
         } else if ext == "zwo" {
@@ -1061,6 +1245,111 @@ impl App {
         self.model_viewer = Some(model3d::ModelViewer::new(file, scene, model.warnings.clone()));
     }
 
+    /// Shows a .lng file as readable text.
+    fn open_lng(&mut self, index: usize) {
+        let Some(archive) = &self.archive else { return };
+        let name = base_name(&archive.entries()[index].path).to_string();
+        let data = match archive.read(index) {
+            Ok(d) => d,
+            Err(e) => {
+                self.status = format!("Read error: {e}");
+                return;
+            }
+        };
+        match obscure_lng::lng_to_txt(&data) {
+            Ok((_, mut txt)) => {
+                if txt.len() > 1024 * 1024 {
+                    let mut cut = 1024 * 1024;
+                    while !txt.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    txt.truncate(cut);
+                    txt.push_str("\n... (truncated for display: export it to get the whole file)\n");
+                }
+                self.text_view =
+                    Some(TextView::new(format!("{name} (as TXT)"), txt, None, false, Some(index)));
+            }
+            Err(e) => self.status = format!("Cannot read '{name}': {e}"),
+        }
+    }
+
+    /// Loads hashes.json (names of XMC tags / attributes) the first time it is needed.
+    fn ensure_xmc_dict(&mut self) {
+        if self.xmc_dict_tried {
+            return;
+        }
+        self.xmc_dict_tried = true;
+        if let Some(p) = find_hashes_json() {
+            match obscure_xmc::load_dictionary(&p) {
+                Ok(d) => self.xmc_dict = Some(d),
+                Err(e) => self.status = format!("Could not read {}: {e}", p.display()),
+            }
+        }
+    }
+
+    /// Shows an .xmc file as XML text.
+    fn open_xmc(&mut self, index: usize) {
+        self.ensure_xmc_dict();
+        let Some(archive) = &self.archive else { return };
+        let name = base_name(&archive.entries()[index].path).to_string();
+        let data = match archive.read(index) {
+            Ok(d) => d,
+            Err(e) => {
+                self.status = format!("Read error: {e}");
+                return;
+            }
+        };
+        let empty = obscure_xmc::Dictionary::new();
+        let result = obscure_xmc::xmc_to_xml(&data, self.xmc_dict.as_ref().unwrap_or(&empty));
+        match result {
+            Ok(mut xml) => {
+                if xml.len() > 512 * 1024 {
+                    let mut cut = 512 * 1024;
+                    while !xml.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    xml.truncate(cut);
+                    xml.push_str("\n<!-- truncated for display: export it to get the whole file -->\n");
+                }
+                let missing = self.xmc_dict.is_none();
+                self.text_view =
+                    Some(TextView::new(format!("{name} (as XML)"), xml, Some(index), missing, None));
+            }
+            Err(e) => self.status = format!("Cannot convert '{name}': {e}"),
+        }
+    }
+
+    /// Asks for hashes.json, remembers it and rebuilds the XML view.
+    fn locate_hashes_json(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Locate hashes.json")
+            .add_filter("hashes", &["json", "txt"])
+            .pick_file()
+        else {
+            return;
+        };
+        match obscure_xmc::load_dictionary(&path) {
+            Ok(d) if !d.is_empty() => {
+                if let Ok(exe) = std::env::current_exe() {
+                    if let Some(dir) = exe.parent() {
+                        let _ = std::fs::write(
+                            dir.join("hashes_json_path.txt"),
+                            path.to_string_lossy().as_bytes(),
+                        );
+                    }
+                }
+                self.xmc_dict = Some(d);
+                self.xmc_dict_tried = true;
+                self.status = "hashes.json loaded.".to_string();
+                if let Some(i) = self.text_view.as_ref().and_then(|t| t.xmc_source) {
+                    self.open_xmc(i);
+                }
+            }
+            Ok(_) => self.status = "That file does not contain any names.".to_string(),
+            Err(e) => self.status = format!("{e}"),
+        }
+    }
+
     fn open_text(&mut self, index: usize) {
         let Some(archive) = &self.archive else { return };
         let name = base_name(&archive.entries()[index].path).to_string();
@@ -1079,7 +1368,7 @@ impl App {
         if data.len() > n {
             text.push_str("\n\n... (file truncated for display)");
         }
-        self.text_view = Some(TextView { name, text, open: true });
+        self.text_view = Some(TextView::new(name, text, None, false, None));
     }
 
     /// Opens a texture pack as a virtual folder with all its images.
@@ -1379,22 +1668,30 @@ impl App {
     }
 
     fn begin_export(&mut self, targets: Vec<ExpTarget>) {
+        self.begin_export_with(targets, None);
+    }
+
+    fn begin_export_with(&mut self, targets: Vec<ExpTarget>, preset: Option<ExportPreset>) {
         let Some(archive) = self.archive.as_deref() else { return };
         if targets.is_empty() {
             return;
         }
         let entries = archive.entries();
-        let (mut n_files, mut has_tex) = (0usize, false);
+        let (mut n_files, mut has_tex, mut has_xmc, mut has_lng) = (0usize, false, false, false);
         let tex_only = targets.iter().all(|t| matches!(t, ExpTarget::Tex(..)));
         let is_tex = |i: usize| {
             let e = ext_of(base_name(&entries[i].path));
             is_pack_ext(&e) || is_image_ext(&e)
         };
+        let is_xmc = |i: usize| ext_of(base_name(&entries[i].path)) == "xmc";
+        let is_lng = |i: usize| ext_of(base_name(&entries[i].path)) == "lng";
         for t in &targets {
             match t {
                 ExpTarget::File(i) => {
                     n_files += 1;
                     has_tex |= is_tex(*i);
+                    has_xmc |= is_xmc(*i);
+                    has_lng |= is_lng(*i);
                 }
                 ExpTarget::Tex(..) => has_tex = true,
                 ExpTarget::Folder(p) => {
@@ -1403,30 +1700,59 @@ impl App {
                         if e.path.starts_with(&prefix) {
                             n_files += 1;
                             has_tex |= is_tex(i);
+                            has_xmc |= is_xmc(i);
+                            has_lng |= is_lng(i);
                         }
                     }
                 }
             }
         }
-        self.export = Some(ExportDialog {
+        let mut dialog = ExportDialog {
             targets,
             n_files,
             has_tex,
             tex_only,
+            has_xmc,
+            has_lng,
             raw: !tex_only,
             png: has_tex,
+            xml: has_xmc,
+            txt: has_lng,
             dest: None,
             job: None,
             message: None,
-        });
+        };
+        match preset {
+            Some(ExportPreset::Raw) => {
+                dialog.raw = true;
+                dialog.png = false;
+                dialog.xml = false;
+                dialog.txt = false;
+            }
+            Some(ExportPreset::Converted) => {
+                dialog.raw = false;
+                dialog.png = false;
+                dialog.xml = has_xmc;
+                dialog.txt = has_lng;
+            }
+            Some(ExportPreset::Both) => {
+                dialog.raw = true;
+                dialog.png = false;
+                dialog.xml = has_xmc;
+                dialog.txt = has_lng;
+            }
+            None => {}
+        }
+        self.export = Some(dialog);
     }
 
     fn start_export(&mut self) {
+        self.ensure_xmc_dict();
         let Some(archive) = self.archive.as_deref() else { return };
         let Some(ex) = &mut self.export else { return };
         let Some(dest) = ex.dest.clone() else { return };
         let entries = archive.entries();
-        let (raw, png) = (ex.raw && !ex.tex_only, ex.png);
+        let (raw, png, xml, txt) = (ex.raw && !ex.tex_only, ex.png, ex.xml, ex.txt);
         let mut items: Vec<ExportItem> = Vec::new();
         let mut seen: SeenSet = HashSet::new();
         for t in &ex.targets {
@@ -1434,13 +1760,13 @@ impl App {
                 ExpTarget::Tex(pack, i) => {
                     add_export_item(&mut items, &mut seen, *pack, Some(*i), ExportKind::Png)
                 }
-                ExpTarget::File(i) => add_file_items(entries, &mut items, &mut seen, *i, raw, png),
+                ExpTarget::File(i) => add_file_items(entries, &mut items, &mut seen, *i, raw, png, xml, txt),
                 ExpTarget::Folder(p) => {
                     let prefix =
                         if p.is_empty() { String::new() } else { format!("{}/", p.join("/")) };
                     for (i, e) in entries.iter().enumerate() {
                         if e.path.starts_with(&prefix) {
-                            add_file_items(entries, &mut items, &mut seen, i, raw, png);
+                            add_file_items(entries, &mut items, &mut seen, i, raw, png, xml, txt);
                         }
                     }
                 }
@@ -1465,11 +1791,13 @@ impl App {
             ex.job = None;
             return;
         };
+        let empty_dict = obscure_xmc::Dictionary::new();
+        let dict = self.xmc_dict.as_ref().unwrap_or(&empty_dict);
         let t0 = Instant::now();
         while job.pos < job.items.len() && !job.cancel && t0.elapsed() < Duration::from_millis(25) {
             let item = job.items[job.pos];
             job.pos += 1;
-            match export_one(archive, &item, &job.dest, &self.game_ctx) {
+            match export_one(archive, &item, &job.dest, &self.game_ctx, dict) {
                 Ok(()) => job.ok += 1,
                 Err(e) => {
                     job.failed += 1;
@@ -1696,9 +2024,17 @@ fn add_file_items(
     i: usize,
     raw: bool,
     png: bool,
+    xml: bool,
+    txt: bool,
 ) {
     if raw {
         add_export_item(items, seen, i, None, ExportKind::Raw);
+    }
+    if xml && ext_of(base_name(&entries[i].path)) == "xmc" {
+        add_export_item(items, seen, i, None, ExportKind::Xml);
+    }
+    if txt && ext_of(base_name(&entries[i].path)) == "lng" {
+        add_export_item(items, seen, i, None, ExportKind::Txt);
     }
     if png {
         let e = ext_of(base_name(&entries[i].path));
@@ -1720,6 +2056,7 @@ fn export_one(
     item: &ExportItem,
     dest: &Path,
     gctx: &Context,
+    dict: &obscure_xmc::Dictionary,
 ) -> Result<(), String> {
     let path = archive
         .entries()
@@ -1734,6 +2071,22 @@ fn export_one(
                 std::fs::create_dir_all(parent).map_err(|e| format!("{path}: {e}"))?;
             }
             std::fs::write(&out, data).map_err(|e| format!("{path}: {e}"))
+        }
+        ExportKind::Txt => {
+            let (_, txt) = obscure_lng::lng_to_txt(&data).map_err(|e| format!("{path}: {e}"))?;
+            let out = dest.join(&path).with_extension("txt");
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("{path}: {e}"))?;
+            }
+            std::fs::write(&out, txt).map_err(|e| format!("{path}: {e}"))
+        }
+        ExportKind::Xml => {
+            let xml = obscure_xmc::xmc_to_xml(&data, dict).map_err(|e| format!("{path}: {e}"))?;
+            let out = dest.join(&path).with_extension("xml");
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("{path}: {e}"))?;
+            }
+            std::fs::write(&out, xml).map_err(|e| format!("{path}: {e}"))
         }
         ExportKind::Png => {
             let textures = match decode_any(&path, &data, gctx) {
@@ -1778,6 +2131,34 @@ fn export_one(
 }
 
 // ---------------------------------------------------------------- utilities
+
+/// hashes.json (XMC names): next to the program or in the current folder, or where the user pointed to.
+fn find_hashes_json() -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(d) = exe.parent() {
+            dirs.push(d.to_path_buf());
+        }
+    }
+    dirs.push(PathBuf::from("."));
+    for d in &dirs {
+        if let Ok(t) = std::fs::read_to_string(d.join("hashes_json_path.txt")) {
+            let p = PathBuf::from(t.trim());
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    for d in &dirs {
+        for rel in ["hashes.json", "hashes/hashes.json", "utils/hashes.json", "zwoLib/utils/hashes.json"] {
+            let p = d.join(rel);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
 
 fn hashes_dir() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
@@ -1850,12 +2231,13 @@ fn type_info(ext: &str) -> (&'static str, Color32) {
         "bmp" | "tga" | "png" | "jpg" | "jpeg" => ("Image", Color32::from_rgb(150, 90, 190)),
         "wav" | "ogg" | "mp3" | "flac" => ("Audio", Color32::from_rgb(30, 150, 150)),
         "bik" | "ogv" => ("Video", Color32::from_rgb(200, 70, 70)),
-        "lng" | "cre" | "sen" | "sub" | "txt" | "log" | "ini" | "xml" | "cfg" | "json" | "csv" => {
+        "lng" => ("LNG (text)", Color32::from_rgb(60, 150, 90)),
+        "cre" | "sen" | "sub" | "txt" | "log" | "ini" | "xml" | "cfg" | "json" | "csv" => {
             ("Text", Color32::from_rgb(60, 150, 90))
         }
         "zwo" => ("Model", Color32::from_rgb(50, 120, 200)),
         "pso" | "vso" => ("Shader", Color32::from_rgb(200, 120, 40)),
-        "xmc" => ("UI", Color32::from_rgb(190, 90, 140)),
+        "xmc" => ("XMC (XML)", Color32::from_rgb(190, 90, 140)),
         "hoe" | "map" | "tm" | "noe" | "dat" => ("Data", Color32::from_rgb(70, 130, 140)),
         _ => ("File", Color32::from_rgb(90, 96, 110)),
     }
@@ -2231,12 +2613,7 @@ fn grid_tile(
         let cb = Rect::from_min_size(pos2(rect.max.x - 26.0, rect.min.y + 6.0), vec2(18.0, 18.0));
         selection_checkbox(ui, &p, cb, id, is_sel, pal, key, vi, actions);
     }
-    resp.context_menu(|ui| {
-        if ui.button("Export...").clicked() {
-            actions.push(Action::Export(export_targets_for(item, cwd, env)));
-            ui.close_menu();
-        }
-    });
+    item_context_menu(&resp, item, cwd, env, actions);
 }
 
 fn handle_clicks(
@@ -2415,12 +2792,7 @@ fn list_row(
 
     handle_clicks(env, &resp, item, vi, cwd, actions);
     badge_click(ui, item, cwd, badge, actions);
-    resp.context_menu(|ui| {
-        if ui.button("Export...").clicked() {
-            actions.push(Action::Export(export_targets_for(item, cwd, env)));
-            ui.close_menu();
-        }
-    });
+    item_context_menu(&resp, item, cwd, env, actions);
 }
 
 // ---------------------------------------------------------------- folder tree
@@ -2515,18 +2887,17 @@ fn tree_ui(
                 }
             }
             resp.context_menu(|ui| {
-                let label = if row.file.is_none() && row.path.is_empty() {
-                    "Export everything..."
-                } else {
-                    "Export..."
+                let t = match row.file {
+                    Some(f) => ExpTarget::File(f),
+                    None => ExpTarget::Folder(row.path.clone()),
                 };
-                if ui.button(label).clicked() {
-                    let t = match row.file {
-                        Some(f) => ExpTarget::File(f),
-                        None => ExpTarget::Folder(row.path.clone()),
-                    };
-                    actions.push(Action::Export(vec![t]));
-                    ui.close_menu();
+                if row.file.is_none() && row.path.is_empty() {
+                    if ui.button("Export everything...").clicked() {
+                        actions.push(Action::Export(vec![t]));
+                        ui.close_menu();
+                    }
+                } else {
+                    export_menu_entries(ui, &ext, vec![t], actions);
                 }
             });
         }
@@ -2557,16 +2928,34 @@ enum Icon {
     Pause,
     Stop,
     Next,
+    Left,
+    Right,
+    Close,
+    Plus,
+    Minus,
+    Reset,
 }
 
 fn icon_button(ui: &mut egui::Ui, icon: Icon, size: f32, pal: &Palette) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click());
+    icon_button_ex(ui, icon, size, pal, true)
+}
+
+/// Round icon button shared by the audio / video players and the viewers.
+fn icon_button_ex(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    size: f32,
+    pal: &Palette,
+    enabled: bool,
+) -> egui::Response {
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), sense);
     let p = ui.painter_at(rect);
-    let bg = if resp.hovered() { pal.tile_hover } else { pal.tile };
+    let bg = if enabled && resp.hovered() { pal.tile_hover } else { pal.tile };
     p.rect_filled(rect, size / 2.0, bg);
     let c = rect.center();
     let s = size * 0.2;
-    let col = pal.text;
+    let col = if enabled { pal.text } else { pal.text.gamma_multiply(0.3) };
     let tri = |a: Pos2, b: Pos2, d: Pos2| {
         p.add(egui::Shape::convex_polygon(vec![a, b, d], col, Stroke::NONE));
     };
@@ -2602,6 +2991,52 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, size: f32, pal: &Palette) -> egui:
                 pos2(c.x + s * 1.1, c.y + s * 1.1),
                 pos2(c.x - s * 0.6, c.y),
             );
+        }
+        Icon::Plus => {
+            let st = Stroke::new(2.4_f32, col);
+            let k = s * 1.3;
+            p.line_segment([pos2(c.x - k, c.y), pos2(c.x + k, c.y)], st);
+            p.line_segment([pos2(c.x, c.y - k), pos2(c.x, c.y + k)], st);
+        }
+        Icon::Minus => {
+            let st = Stroke::new(2.4_f32, col);
+            let k = s * 1.3;
+            p.line_segment([pos2(c.x - k, c.y), pos2(c.x + k, c.y)], st);
+        }
+        Icon::Reset => {
+            // a circular arrow
+            let st = Stroke::new(2.2_f32, col);
+            let r = s * 1.5;
+            let a0 = -1.0_f32;
+            let sweep = 4.9_f32;
+            let mut prev = pos2(c.x + r * a0.cos(), c.y + r * a0.sin());
+            for i in 1..=16 {
+                let a = a0 + sweep * (i as f32 / 16.0);
+                let q = pos2(c.x + r * a.cos(), c.y + r * a.sin());
+                p.line_segment([prev, q], st);
+                prev = q;
+            }
+            let a_end = a0 + sweep;
+            let dir = vec2(-a_end.sin(), a_end.cos());
+            let side = vec2(a_end.cos(), a_end.sin());
+            p.line_segment([prev, prev - dir * s * 0.9 + side * s * 0.6], st);
+            p.line_segment([prev, prev - dir * s * 0.9 - side * s * 0.6], st);
+        }
+        Icon::Left => {
+            let st = Stroke::new(2.5_f32, col);
+            p.line_segment([pos2(c.x + s * 0.7, c.y - s * 1.5), pos2(c.x - s * 0.8, c.y)], st);
+            p.line_segment([pos2(c.x - s * 0.8, c.y), pos2(c.x + s * 0.7, c.y + s * 1.5)], st);
+        }
+        Icon::Right => {
+            let st = Stroke::new(2.5_f32, col);
+            p.line_segment([pos2(c.x - s * 0.7, c.y - s * 1.5), pos2(c.x + s * 0.8, c.y)], st);
+            p.line_segment([pos2(c.x + s * 0.8, c.y), pos2(c.x - s * 0.7, c.y + s * 1.5)], st);
+        }
+        Icon::Close => {
+            let st = Stroke::new(2.2_f32, col);
+            let k = s * 1.1;
+            p.line_segment([pos2(c.x - k, c.y - k), pos2(c.x + k, c.y + k)], st);
+            p.line_segment([pos2(c.x - k, c.y + k), pos2(c.x + k, c.y - k)], st);
         }
         Icon::Next => {
             p.rect_filled(
@@ -2698,7 +3133,7 @@ fn player_ui(
 // ---------------------------------------------------------------- image viewer
 
 /// Full-window viewer: wheel zooms, drag pans, double click toggles fit / 100%. Returns false to close.
-fn viewer_ui(ctx: &egui::Context, v: &mut Viewer) -> (bool, isize) {
+fn viewer_ui(ctx: &egui::Context, v: &mut Viewer, pal: &Palette) -> (bool, isize) {
     let mut open = true;
     let mut step = 0isize;
     let now = ctx.input(|i| i.time);
@@ -2712,8 +3147,8 @@ fn viewer_ui(ctx: &egui::Context, v: &mut Viewer) -> (bool, isize) {
             let p = ui.painter_at(rect);
             p.rect_filled(rect, 0.0, Color32::from_black_alpha(235));
 
-            let fit = ((rect.width() * 0.92) / v.w as f32)
-                .min((rect.height() * 0.84) / v.h as f32)
+            let fit = ((rect.width() * 0.88) / v.w as f32)
+                .min((rect.height() * 0.80) / v.h as f32)
                 .max(0.01);
             if v.fit_pending {
                 v.zoom = fit;
@@ -2750,49 +3185,103 @@ fn viewer_ui(ctx: &egui::Context, v: &mut Viewer) -> (bool, isize) {
 
             if settled && resp.clicked() {
                 if let Some(ptr) = ctx.pointer_hover_pos() {
-                    if !img_rect.contains(ptr) && ptr.y > rect.min.y + 44.0 {
+                    if !img_rect.contains(ptr) && ptr.y > rect.min.y + 52.0 {
                         open = false;
                     }
                 }
             }
 
-            let bar = Rect::from_min_size(rect.min, vec2(rect.width(), 40.0));
+            // top bar: name, size and zoom (centered); close on the right
+            let bar = Rect::from_min_size(rect.min, vec2(rect.width(), 52.0));
             p.rect_filled(bar, 0.0, Color32::from_black_alpha(160));
-            ui.allocate_ui_at_rect(bar.shrink2(vec2(10.0, 6.0)), |ui| {
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(v.pos > 0, egui::Button::new("Previous")).clicked() {
-                        step = -1;
-                    }
-                    if ui.add_enabled(v.pos + 1 < v.list.len(), egui::Button::new("Next")).clicked() {
-                        step = 1;
-                    }
-                    ui.colored_label(
-                        Color32::WHITE,
-                        format!(
-                            "{}  -  {}x{}  -  {:.0}%  -  {} / {}",
-                            v.name,
-                            v.w,
-                            v.h,
-                            v.zoom * 100.0,
-                            v.pos + 1,
-                            v.list.len()
-                        ),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close (Esc)").clicked() {
-                            open = false;
-                        }
-                        if ui.button("100%").clicked() {
-                            v.zoom = 1.0;
-                            v.offset = egui::Vec2::ZERO;
-                        }
-                        if ui.button("Fit").clicked() {
-                            v.fit_pending = true;
-                        }
-                    });
-                });
+            let title =
+                p.layout_no_wrap(v.name.clone(), FontId::proportional(15.0), Color32::from_gray(240));
+            let info = p.layout_no_wrap(
+                format!("{} x {}   -   Zoom {:.0}%", v.w, v.h, v.zoom * 100.0),
+                FontId::proportional(12.0),
+                Color32::from_gray(170),
+            );
+            let (tsz, isz) = (title.size(), info.size());
+            let top_y = bar.center().y - (tsz.y + isz.y + 2.0) / 2.0;
+            p.galley(pos2(bar.center().x - tsz.x / 2.0, top_y), title, Color32::from_gray(240));
+            p.galley(
+                pos2(bar.center().x - isz.x / 2.0, top_y + tsz.y + 2.0),
+                info,
+                Color32::from_gray(170),
+            );
+            let cs = 36.0;
+            let close_rect =
+                Rect::from_min_size(pos2(rect.max.x - cs - 14.0, bar.center().y - cs / 2.0), vec2(cs, cs));
+            ui.allocate_ui_at_rect(close_rect, |ui| {
+                if icon_button(ui, Icon::Close, cs, pal).on_hover_text("Close (Esc)").clicked() {
+                    open = false;
+                }
             });
+
+            // bottom corners: fit to window (left), zoom out / in (right)
+            let zs = 44.0;
+            let margin = 22.0;
+            let zy = rect.max.y - margin - zs;
+            let fit_rect = Rect::from_min_size(pos2(rect.min.x + margin, zy), vec2(zs, zs));
+            let minus_rect = Rect::from_min_size(
+                pos2(rect.max.x - margin - zs * 2.0 - 10.0, zy),
+                vec2(zs, zs),
+            );
+            let plus_rect = Rect::from_min_size(pos2(rect.max.x - margin - zs, zy), vec2(zs, zs));
+            let mut zoom_factor = 1.0_f32;
+            ui.allocate_ui_at_rect(fit_rect, |ui| {
+                if icon_button(ui, Icon::Reset, zs, pal).on_hover_text("Fit to window").clicked() {
+                    v.fit_pending = true;
+                }
+            });
+            ui.allocate_ui_at_rect(minus_rect, |ui| {
+                if icon_button(ui, Icon::Minus, zs, pal).on_hover_text("Zoom out").clicked() {
+                    zoom_factor = 1.0 / 1.25;
+                }
+            });
+            ui.allocate_ui_at_rect(plus_rect, |ui| {
+                if icon_button(ui, Icon::Plus, zs, pal).on_hover_text("Zoom in").clicked() {
+                    zoom_factor = 1.25;
+                }
+            });
+            if zoom_factor != 1.0 {
+                let nz = (v.zoom * zoom_factor).clamp(0.02, 64.0);
+                let f = nz / v.zoom;
+                v.offset = v.offset * f;
+                v.zoom = nz;
+            }
+
+            // previous / next on both sides of the image
+            let bs = 56.0;
+            let left_rect =
+                Rect::from_min_size(pos2(rect.min.x + 22.0, rect.center().y - bs / 2.0), vec2(bs, bs));
+            let right_rect = Rect::from_min_size(
+                pos2(rect.max.x - 22.0 - bs, rect.center().y - bs / 2.0),
+                vec2(bs, bs),
+            );
+            let can_prev = v.pos > 0;
+            let can_next = v.pos + 1 < v.list.len();
+            ui.allocate_ui_at_rect(left_rect, |ui| {
+                if icon_button_ex(ui, Icon::Left, bs, pal, can_prev).clicked() && can_prev {
+                    step = -1;
+                }
+            });
+            ui.allocate_ui_at_rect(right_rect, |ui| {
+                if icon_button_ex(ui, Icon::Right, bs, pal, can_next).clicked() && can_next {
+                    step = 1;
+                }
+            });
+
+            // current / total, bottom center
+            let label = format!("{} / {}", v.pos + 1, v.list.len());
+            let galley =
+                p.layout_no_wrap(label, FontId::proportional(15.0), Color32::from_gray(235));
+            let pill_size = galley.size() + vec2(30.0, 16.0);
+            let pill = Rect::from_center_size(pos2(rect.center().x, rect.max.y - 36.0), pill_size);
+            p.rect_filled(pill, pill_size.y / 2.0, Color32::from_black_alpha(175));
+            p.galley(pill.center() - galley.size() / 2.0, galley, Color32::from_gray(235));
         });
+
     let (esc, left, right) = ctx.input(|i| {
         (
             i.key_pressed(egui::Key::Escape),
@@ -2869,7 +3358,7 @@ fn video_overlay_ui(ctx: &egui::Context, s: &mut VideoSession, pal: &Palette) ->
                 ui.horizontal(|ui| {
                     ui.strong(s.name.as_str());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close (Esc)").clicked() {
+                        if icon_button(ui, Icon::Close, 32.0, pal).on_hover_text("Close (Esc)").clicked() {
                             open = false;
                         }
                     });
@@ -2979,6 +3468,8 @@ impl eframe::App for App {
             apply_style(ctx, self.dark_mode);
         }
         let pal = palette(self.dark_mode);
+        // the full-window overlays are always dark
+        let overlay_pal = palette(true);
         let now = ctx.input(|i| i.time);
 
         if self.query != self.applied_query {
@@ -3418,7 +3909,7 @@ impl eframe::App for App {
         let mut viewer_step = 0isize;
         let mut close_viewer = false;
         if let Some(v) = &mut self.viewer {
-            let (keep, step) = viewer_ui(ctx, v);
+            let (keep, step) = viewer_ui(ctx, v, &overlay_pal);
             close_viewer = !keep;
             viewer_step = step;
         }
@@ -3427,22 +3918,175 @@ impl eframe::App for App {
         } else if viewer_step != 0 {
             self.step_viewer(viewer_step, ctx);
         }
+        let mut locate_hashes = false;
+        let mut export_req: Option<(usize, ExportPreset)> = None;
         if let Some(t) = &mut self.text_view {
             let mut open = t.open;
+            let typing = ctx.wants_keyboard_input();
+            let (find_key, f3, shift) = ctx.input(|i| {
+                (
+                    i.modifiers.command && i.key_pressed(egui::Key::F),
+                    i.key_pressed(egui::Key::F3),
+                    i.modifiers.shift,
+                )
+            });
+            if find_key {
+                ctx.memory_mut(|m| m.request_focus(egui::Id::new("text_search")));
+            }
+            if f3 {
+                t.step_match(if shift { -1 } else { 1 });
+            }
             egui::Window::new(t.name.as_str())
                 .open(&mut open)
                 .default_size([720.0, 520.0])
                 .show(ctx, |ui| {
-                    egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(t.text.as_str()).monospace()));
+                    let source = t
+                        .xmc_source
+                        .map(|i| (i, ".xmc", ".xml"))
+                        .or(t.lng_source.map(|i| (i, ".lng", ".txt")));
+                    if let Some((i, a, b)) = source {
+                        ui.horizontal(|ui| {
+                            if ui.button(format!("Export {a}")).clicked() {
+                                export_req = Some((i, ExportPreset::Raw));
+                            }
+                            if ui.button(format!("Export {b}")).clicked() {
+                                export_req = Some((i, ExportPreset::Converted));
+                            }
+                            if ui.button(format!("Export {a} + {b}")).clicked() {
+                                export_req = Some((i, ExportPreset::Both));
+                            }
+                        });
+                        ui.separator();
+                    }
+                    if t.xmc_missing {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.colored_label(
+                                Color32::from_rgb(230, 190, 90),
+                                "hashes.json not found: names appear as tag_XXXXXXXX / attr_XXXXXXXX.",
+                            );
+                            if ui.button("Locate hashes.json...").clicked() {
+                                locate_hashes = true;
+                            }
+                        });
+                        ui.separator();
+                    }
+                    // search box
+                    ui.horizontal(|ui| {
+                        ui.label("Find:");
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut t.query)
+                                .id(egui::Id::new("text_search"))
+                                .hint_text("Search in this file...")
+                                .desired_width(240.0),
+                        );
+                        if resp.changed() {
+                            t.refresh_matches();
+                        }
+                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            let back = ui.input(|i| i.modifiers.shift);
+                            t.step_match(if back { -1 } else { 1 });
+                            resp.request_focus();
+                        }
+                        let has_hits = !t.matches.is_empty();
+                        if icon_button_ex(ui, Icon::Left, 26.0, &pal, has_hits)
+                            .on_hover_text("Previous match (Shift+Enter)")
+                            .clicked()
+                        {
+                            t.step_match(-1);
+                        }
+                        if icon_button_ex(ui, Icon::Right, 26.0, &pal, has_hits)
+                            .on_hover_text("Next match (Enter or F3)")
+                            .clicked()
+                        {
+                            t.step_match(1);
+                        }
+                        if !t.query.is_empty() {
+                            let label = if has_hits {
+                                format!("{} / {}", t.current + 1, t.matches.len())
+                            } else {
+                                "no matches".to_string()
+                            };
+                            ui.label(label);
+                            if icon_button(ui, Icon::Close, 22.0, &pal).on_hover_text("Clear").clicked() {
+                                t.query.clear();
+                                t.refresh_matches();
+                            }
+                        }
+                    });
+                    ui.separator();
+
+                    // the text, one row per line (only the visible rows are drawn), matches highlighted
+                    let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
+                    let stride = row_h + ui.spacing().item_spacing.y;
+                    let mut area = egui::ScrollArea::both().auto_shrink([false, false]);
+                    if t.jump {
+                        t.jump = false;
+                        if let Some(m) = t.matches.get(t.current) {
+                            let y = (m.line as f32 * stride - ui.available_height() * 0.4).max(0.0);
+                            area = area.vertical_scroll_offset(y);
+                        }
+                    }
+                    let font = egui::TextStyle::Monospace.resolve(ui.style());
+                    let text_color = ui.visuals().text_color();
+                    let n_lines = t.lines.len();
+                    area.show_rows(ui, row_h, n_lines, |ui, range| {
+                        for li in range {
+                            let line = t.line(li);
+                            let first = t.matches.partition_point(|m| m.line < li);
+                            if first >= t.matches.len() || t.matches[first].line != li {
+                                ui.label(egui::RichText::new(if line.is_empty() { " " } else { line }).monospace());
+                                continue;
+                            }
+                            let mut job = egui::text::LayoutJob::default();
+                            let normal = egui::TextFormat {
+                                font_id: font.clone(),
+                                color: text_color,
+                                ..Default::default()
+                            };
+                            let mut pos = 0usize;
+                            let mut k = first;
+                            while k < t.matches.len() && t.matches[k].line == li {
+                                let m = &t.matches[k];
+                                if m.start > pos {
+                                    job.append(&line[pos..m.start], 0.0, normal.clone());
+                                }
+                                let current = k == t.current;
+                                job.append(
+                                    &line[m.start..m.end],
+                                    0.0,
+                                    egui::TextFormat {
+                                        font_id: font.clone(),
+                                        color: if current { Color32::BLACK } else { Color32::WHITE },
+                                        background: if current {
+                                            Color32::from_rgb(255, 170, 40)
+                                        } else {
+                                            Color32::from_rgb(120, 100, 30)
+                                        },
+                                        ..Default::default()
+                                    },
+                                );
+                                pos = m.end;
+                                k += 1;
+                            }
+                            if pos < line.len() {
+                                job.append(&line[pos..], 0.0, normal.clone());
+                            }
+                            ui.add(egui::Label::new(job));
+                        }
                     });
                 });
-            if !open || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if !open || (!typing && ctx.input(|i| i.key_pressed(egui::Key::Escape))) {
                 t.open = false;
             }
         }
         if self.text_view.as_ref().map(|t| !t.open).unwrap_or(false) {
             self.text_view = None;
+        }
+        if locate_hashes {
+            self.locate_hashes_json();
+        }
+        if let Some((i, preset)) = export_req {
+            self.begin_export_with(vec![ExpTarget::File(i)], Some(preset));
         }
         let mut close_model = false;
         if let Some(mv) = &mut self.model_viewer {
@@ -3456,7 +4100,7 @@ impl eframe::App for App {
         let mut close_video = false;
         let mut video_step = 0isize;
         if let Some(sess) = &mut self.video {
-            let (keep, step) = video_overlay_ui(ctx, sess, &pal);
+            let (keep, step) = video_overlay_ui(ctx, sess, &overlay_pal);
             close_video = !keep;
             video_step = step;
         }
@@ -3565,6 +4209,7 @@ impl eframe::App for App {
                     self.begin_export(targets);
                 }
                 Action::Export(targets) => self.begin_export(targets),
+                Action::ExportPreset(targets, preset) => self.begin_export_with(targets, Some(preset)),
                 Action::Up => {
                     if self.container.is_some() {
                         self.container = None;
@@ -3688,6 +4333,14 @@ impl App {
                             "Textures and images as PNG (images inside packs become separate files)",
                         ),
                     );
+                    ui.add_enabled(
+                        ex.has_xmc,
+                        egui::Checkbox::new(&mut ex.xml, "XMC files as XML (readable text, .xml)"),
+                    );
+                    ui.add_enabled(
+                        ex.has_lng,
+                        egui::Checkbox::new(&mut ex.txt, "LNG files as TXT (readable text, .txt)"),
+                    );
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui.button("Choose folder...").clicked() {
@@ -3702,7 +4355,11 @@ impl App {
                     });
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        let ready = ex.dest.is_some() && ((ex.raw && !ex.tex_only) || ex.png);
+                        let ready = ex.dest.is_some()
+                            && ((ex.raw && !ex.tex_only)
+                                || ex.png
+                                || (ex.xml && ex.has_xmc)
+                                || (ex.txt && ex.has_lng));
                         if ui.add_enabled(ready, egui::Button::new("Export")).clicked() {
                             start = true;
                         }
@@ -3720,5 +4377,49 @@ impl App {
         } else if start {
             self.start_export();
         }
+    }
+}
+
+#[cfg(test)]
+mod text_search_tests {
+    use super::*;
+
+    fn view(text: &str) -> TextView {
+        TextView::new("t".to_string(), text.to_string(), None, false, None)
+    }
+
+    #[test]
+    fn splits_lines_and_finds_matches_ignoring_case() {
+        let mut v = view("Hello World\r\nhello again\n\nlast");
+        assert_eq!(v.lines.len(), 4);
+        assert_eq!(v.line(0), "Hello World");
+        assert_eq!(v.line(2), "");
+        v.query = "HELLO".to_string();
+        v.refresh_matches();
+        assert_eq!(v.matches.len(), 2);
+        assert_eq!((v.matches[0].line, v.matches[0].start, v.matches[0].end), (0, 0, 5));
+        assert_eq!(v.matches[1].line, 1);
+        v.step_match(1);
+        assert_eq!(v.current, 1);
+        v.step_match(1);
+        assert_eq!(v.current, 0);
+        v.step_match(-1);
+        assert_eq!(v.current, 1);
+    }
+
+    #[test]
+    fn accented_text_is_case_insensitive() {
+        let mut v = view("A\u{00C7}\u{00C3}O a\u{00E7}\u{00E3}o");
+        v.query = "a\u{00E7}\u{00E3}o".to_string();
+        v.refresh_matches();
+        assert_eq!(v.matches.len(), 2);
+        assert_eq!(&v.line(0)[v.matches[1].start..v.matches[1].end], "a\u{00E7}\u{00E3}o");
+    }
+
+    #[test]
+    fn empty_query_has_no_matches() {
+        let mut v = view("abc");
+        v.refresh_matches();
+        assert!(v.matches.is_empty());
     }
 }

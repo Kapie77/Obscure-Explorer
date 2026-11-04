@@ -528,23 +528,24 @@ fn read_material(data: &[u8], start: usize) -> Result<(Material, usize), ModelEr
     Ok((mat, end))
 }
 
-/// Nodes have no size field: id, flags, 4 vectors, then a child and a sibling chain.
-fn skip_node(r: &mut Reader) -> Result<(), ModelError> {
-    loop {
-        r.skip(2 * 4, "node header")?;
-        r.skip(12 * 4, "node vectors")?;
-        let child_count = r.u32("node child count")?;
-        if child_count > 0 {
-            let child_index = r.u32("node child index")?;
-            if child_index > 0 {
-                skip_node(r)?;
-            }
+/// Nodes (an AABSP tree) have no size field: depth, entity capacity, 4 vectors, then optional
+/// left and right children, each announced by a u32 flag.
+fn skip_node(r: &mut Reader, depth: usize) -> Result<(), ModelError> {
+    if depth > 2000 {
+        return Err(ModelError::Invalid("node tree is nested too deeply".into()));
+    }
+    r.skip(2 * 4, "node header")?;
+    r.skip(12 * 4, "node vectors")?;
+    let has_children = r.u32("node children flag")?;
+    if has_children != 0 {
+        if r.u32("node left flag")? != 0 {
+            skip_node(r, depth + 1)?;
         }
-        let next = r.u32("node flag")?;
-        if next == 0 {
-            return Ok(());
+        if r.u32("node right flag")? != 0 {
+            skip_node(r, depth + 1)?;
         }
     }
+    Ok(())
 }
 
 fn sized_end(data: &[u8], pos: usize) -> Option<usize> {
@@ -594,7 +595,7 @@ pub fn parse_zwo(data: &[u8]) -> Result<Model, ModelError> {
             },
             0x0A => {
                 let mut r = Reader::new(data, pos);
-                match skip_node(&mut r) {
+                match skip_node(&mut r, 0) {
                     Ok(()) => pos = r.pos,
                     Err(e) => {
                         model.warnings.push(format!("node at offset {pos}: {e}; the rest of the file was not read"));
@@ -602,7 +603,7 @@ pub fn parse_zwo(data: &[u8]) -> Result<Model, ModelError> {
                     }
                 }
             }
-            0x02 | 0x06 | 0x07 | 0x09 | 0x0D | 0x0E | 0x0F | 0x10 => {
+            0x02 | 0x06 | 0x07 | 0x09 | 0x0C | 0x0D | 0x0E | 0x0F | 0x10 | 0x11 | 0x12 => {
                 if t == 0x06 {
                     model.has_skeleton = true;
                 }
@@ -617,13 +618,23 @@ pub fn parse_zwo(data: &[u8]) -> Result<Model, ModelError> {
                     }
                 }
             }
-            other => {
-                model.warnings.push(format!(
-                    "unknown entity type 0x{other:X} at offset {}; the rest of the file was not read",
-                    pos - 4
-                ));
-                break;
-            }
+            other => match sized_end(data, pos) {
+                // every entity except nodes starts with its own size: skip what we do not know
+                Some(end) => {
+                    model.warnings.push(format!(
+                        "skipped an entity of unknown type 0x{other:X} at offset {}",
+                        pos - 4
+                    ));
+                    pos = end;
+                }
+                None => {
+                    model.warnings.push(format!(
+                        "unknown entity type 0x{other:X} at offset {}; the rest of the file was not read",
+                        pos - 4
+                    ));
+                    break;
+                }
+            },
         }
     }
     let missing: Vec<String> = model
