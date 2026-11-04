@@ -3,6 +3,7 @@
 
 mod media;
 mod model3d;
+mod ruffle;
 
 use eframe::egui;
 use egui::{pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke};
@@ -218,6 +219,23 @@ struct Viewer {
     /// Images of the view it was opened from: (file index, image inside a pack).
     list: Vec<(usize, Option<usize>)>,
     pos: usize,
+}
+
+/// Summary window of a .swf file (the file itself is played by Ruffle).
+struct SwfView {
+    name: String,
+    index: usize,
+    size: usize,
+    info: Result<obscure_swf::SwfInfo, String>,
+    open: bool,
+    message: Option<String>,
+}
+
+enum SwfAction {
+    Play,
+    Download,
+    Locate,
+    Export,
 }
 
 struct TextView {
@@ -545,6 +563,10 @@ struct App {
     viewer: Option<Viewer>,
     text_view: Option<TextView>,
     model_viewer: Option<model3d::ModelViewer>,
+    swf_view: Option<SwfView>,
+    ruffle: Option<ruffle::Ruffle>,
+    ruffle_tried: bool,
+    ruffle_download: Option<ruffle::RuffleDownload>,
     xmc_dict: Option<obscure_xmc::Dictionary>,
     xmc_dict_tried: bool,
     video: Option<VideoSession>,
@@ -603,6 +625,10 @@ impl Default for App {
             viewer: None,
             text_view: None,
             model_viewer: None,
+            swf_view: None,
+            ruffle: None,
+            ruffle_tried: false,
+            ruffle_download: None,
             xmc_dict: None,
             xmc_dict_tried: false,
             video: None,
@@ -842,6 +868,7 @@ impl App {
         self.viewer = None;
         self.text_view = None;
         self.model_viewer = None;
+        self.swf_view = None;
         self.video = None;
         self.export = None;
         self.player = None;
@@ -1004,6 +1031,15 @@ impl App {
             self.toggle_or_play_audio(index);
         } else if is_video_ext(&ext) {
             self.start_video(index, ctx, now);
+        } else if ext == "ani" {
+            let name = self
+                .archive
+                .as_ref()
+                .map(|a| base_name(&a.entries()[index].path).to_string())
+                .unwrap_or_default();
+            self.status = format!("'{name}' is animation data: there is no preview for it yet.");
+        } else if ext == "swf" {
+            self.open_swf(index);
         } else if ext == "lng" {
             self.open_lng(index);
         } else if ext == "xmc" {
@@ -1245,6 +1281,62 @@ impl App {
         self.model_viewer = Some(model3d::ModelViewer::new(file, scene, model.warnings.clone()));
     }
 
+    /// Opens the summary window of a .swf file.
+    fn open_swf(&mut self, index: usize) {
+        let Some(archive) = &self.archive else { return };
+        let name = base_name(&archive.entries()[index].path).to_string();
+        let data = match archive.read(index) {
+            Ok(d) => d,
+            Err(e) => {
+                self.status = format!("Read error: {e}");
+                return;
+            }
+        };
+        let info = obscure_swf::parse_swf(&data).map_err(|e| e.to_string());
+        if self.ruffle.is_none() && !self.ruffle_tried {
+            self.ruffle_tried = true;
+            self.ruffle = ruffle::find_ruffle();
+        }
+        self.swf_view = Some(SwfView { name, index, size: data.len(), info, open: true, message: None });
+    }
+
+    fn swf_message(&mut self, m: impl Into<String>) {
+        if let Some(v) = &mut self.swf_view {
+            v.message = Some(m.into());
+        }
+    }
+
+    /// Writes the .swf to the temporary folder and opens it in Ruffle.
+    fn play_swf(&mut self) {
+        let Some((index, name)) = self.swf_view.as_ref().map(|v| (v.index, v.name.clone())) else {
+            return;
+        };
+        if self.ruffle.is_none() {
+            self.ruffle = ruffle::find_ruffle();
+        }
+        let Some(r) = self.ruffle.clone() else {
+            self.swf_message("Ruffle was not found.");
+            return;
+        };
+        let data = match self.archive.as_ref().map(|a| a.read(index)) {
+            Some(Ok(d)) => d,
+            Some(Err(e)) => {
+                self.swf_message(format!("Read error: {e}"));
+                return;
+            }
+            None => return,
+        };
+        let file = self.temp.path_for(&format!("swf_{index}_{name}"));
+        if let Err(e) = std::fs::write(&file, &data) {
+            self.swf_message(format!("Cannot write the temporary file: {e}"));
+            return;
+        }
+        match r.open(&file) {
+            Ok(()) => self.swf_message("Opened in Ruffle (it has its own window)."),
+            Err(e) => self.swf_message(format!("Could not start Ruffle: {e}")),
+        }
+    }
+
     /// Shows a .lng file as readable text.
     fn open_lng(&mut self, index: usize) {
         let Some(archive) = &self.archive else { return };
@@ -1360,6 +1452,10 @@ impl App {
                 return;
             }
         };
+        if let Some(summary) = lua_bytecode_summary(&data) {
+            self.text_view = Some(TextView::new(format!("{name} (Lua bytecode)"), summary, None, false, None));
+            return;
+        }
         let n = data.len().min(256 * 1024);
         let Some(mut text) = decode_text(&data[..n]) else {
             return; // not really text: nothing to show
@@ -1850,6 +1946,7 @@ impl App {
             || self.video.is_some()
             || self.text_view.is_some()
             || self.model_viewer.is_some()
+            || self.swf_view.is_some()
             || self.export.is_some()
             || (self.ffmpeg_prompt && self.ffmpeg.is_none())
     }
@@ -2220,21 +2317,21 @@ fn fmt_size(n: u64) -> String {
 fn is_text_ext(ext: &str) -> bool {
     matches!(
         ext,
-        "txt" | "log" | "ini" | "xml" | "cfg" | "json" | "csv" | "md" | "bat" | "inf" | "lng" | "cre" | "sen" | "sub" | "srt"
+        "txt" | "log" | "ini" | "xml" | "cfg" | "json" | "csv" | "md" | "bat" | "inf" | "lng" | "cre" | "sen" | "sub" | "srt" | "lua"
     )
 }
 
-/// Animation files are `.zwo` files with "anim" in the name (anims_pc.zwo, crabanim.zwo, ...):
-/// they only hold skeletal animations and cameras, no geometry.
-fn is_anim_zwo(name: &str) -> bool {
+/// Animation files: `.zwo` files with "anim" in the name (Obscure 1 / 2: anims_pc.zwo, crabanim.zwo, ...)
+/// that only hold skeletal animations and cameras, and the `.ani` files of Final Exam.
+fn is_animation_file(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.ends_with(".zwo") && lower.contains("anim")
+    lower.ends_with(".ani") || (lower.ends_with(".zwo") && lower.contains("anim"))
 }
 
 const ANIM_COLOR: Color32 = Color32::from_rgb(214, 120, 40);
 
 fn file_type(name: &str, ext: &str) -> (&'static str, Color32) {
-    if is_anim_zwo(name) {
+    if is_animation_file(name) {
         ("Animation", ANIM_COLOR)
     } else {
         type_info(ext)
@@ -2250,6 +2347,8 @@ fn type_info(ext: &str) -> (&'static str, Color32) {
         "bik" | "ogv" => ("Video", Color32::from_rgb(200, 70, 70)),
         "lng" => ("LNG (text)", Color32::from_rgb(60, 150, 90)),
         "srt" => ("SRT (subtitles)", Color32::from_rgb(60, 150, 90)),
+        "lua" => ("Lua script", Color32::from_rgb(70, 110, 200)),
+        "swf" => ("Flash (SWF)", Color32::from_rgb(200, 70, 70)),
         "cre" | "sen" | "sub" | "txt" | "log" | "ini" | "xml" | "cfg" | "json" | "csv" => {
             ("Text", Color32::from_rgb(60, 150, 90))
         }
@@ -2259,6 +2358,43 @@ fn type_info(ext: &str) -> (&'static str, Color32) {
         "hoe" | "map" | "tm" | "noe" | "dat" => ("Data", Color32::from_rgb(70, 130, 140)),
         _ => ("File", Color32::from_rgb(90, 96, 110)),
     }
+}
+
+/// Compiled Lua (luac / LuaJIT) has no source text: show what it is and the strings inside it,
+/// which can be searched like any other text.
+fn lua_bytecode_summary(data: &[u8]) -> Option<String> {
+    let mut out = String::new();
+    if data.starts_with(b"\x1bLua") && data.len() > 4 {
+        out.push_str(&format!(
+            "-- Compiled Lua {}.{} bytecode ({} bytes).\n",
+            data[4] >> 4,
+            data[4] & 0x0F,
+            data.len()
+        ));
+    } else if data.starts_with(b"\x1bLJ") {
+        out.push_str(&format!("-- Compiled LuaJIT bytecode ({} bytes).\n", data.len()));
+    } else {
+        return None;
+    }
+    out.push_str("-- There is no source text in this file; the readable strings found in it are listed below.\n\n");
+    let mut run: Vec<u8> = Vec::new();
+    let mut count = 0usize;
+    for &b in data.iter().chain(std::iter::once(&0u8)) {
+        if (0x20..0x7F).contains(&b) || b == b'\t' {
+            run.push(b);
+        } else {
+            if run.len() >= 4 {
+                out.push_str(&String::from_utf8_lossy(&run));
+                out.push('\n');
+                count += 1;
+                if count >= 50_000 {
+                    break;
+                }
+            }
+            run.clear();
+        }
+    }
+    Some(out)
 }
 
 /// Text files come as UTF-8 (with or without BOM), UTF-16 (BOM) or an old 8-bit code page.
@@ -2606,7 +2742,7 @@ fn grid_tile(
                     Some(i) => paint_thumb(&p, icon_rect, &i.handle, pal),
                     None => paint_file(&p, icon_rect, &ext, accent, pal),
                 }
-                if is_anim_zwo(name) {
+                if is_animation_file(name) {
                     paint_tag(&p, rect.min + vec2(6.0, 6.0), "ANIM", ANIM_COLOR);
                 }
                 if is_video_ext(&ext) {
@@ -3243,7 +3379,7 @@ fn viewer_ui(ctx: &egui::Context, v: &mut Viewer, pal: &Palette) -> (bool, isize
             let title =
                 p.layout_no_wrap(v.name.clone(), FontId::proportional(15.0), Color32::from_gray(240));
             let info = p.layout_no_wrap(
-                format!("{} x {}   -   Zoom {:.0}%", v.w, v.h, v.zoom * 100.0),
+                format!("{} x {}", v.w, v.h),
                 FontId::proportional(12.0),
                 Color32::from_gray(170),
             );
@@ -3265,15 +3401,25 @@ fn viewer_ui(ctx: &egui::Context, v: &mut Viewer, pal: &Palette) -> (bool, isize
             });
 
             // bottom corners: fit to window (left), zoom out / in (right)
-            let zs = 44.0;
+            let zs = 36.0;
             let margin = 22.0;
             let zy = rect.max.y - margin - zs;
             let fit_rect = Rect::from_min_size(pos2(rect.min.x + margin, zy), vec2(zs, zs));
-            let minus_rect = Rect::from_min_size(
-                pos2(rect.max.x - margin - zs * 2.0 - 10.0, zy),
-                vec2(zs, zs),
-            );
             let plus_rect = Rect::from_min_size(pos2(rect.max.x - margin - zs, zy), vec2(zs, zs));
+            let pill_w = 74.0;
+            let pill_rect =
+                Rect::from_min_size(pos2(plus_rect.min.x - 8.0 - pill_w, zy), vec2(pill_w, zs));
+            let minus_rect =
+                Rect::from_min_size(pos2(pill_rect.min.x - 8.0 - zs, zy), vec2(zs, zs));
+            // the zoom level (100% = real size) sits between the two zoom buttons
+            p.rect_filled(pill_rect, zs / 2.0, pal.tile);
+            p.text(
+                pill_rect.center(),
+                Align2::CENTER_CENTER,
+                format!("{:.0}%", v.zoom * 100.0),
+                FontId::proportional(14.0),
+                pal.text,
+            );
             let mut zoom_factor = 1.0_f32;
             ui.allocate_ui_at_rect(fit_rect, |ui| {
                 if icon_button(ui, Icon::Reset, zs, pal).on_hover_text("Fit to window").clicked() {
@@ -3323,7 +3469,7 @@ fn viewer_ui(ctx: &egui::Context, v: &mut Viewer, pal: &Palette) -> (bool, isize
             let galley =
                 p.layout_no_wrap(label, FontId::proportional(15.0), Color32::from_gray(235));
             let pill_size = galley.size() + vec2(30.0, 16.0);
-            let pill = Rect::from_center_size(pos2(rect.center().x, rect.max.y - 36.0), pill_size);
+            let pill = Rect::from_center_size(pos2(rect.center().x, rect.max.y - 40.0), pill_size);
             p.rect_filled(pill, pill_size.y / 2.0, Color32::from_black_alpha(175));
             p.galley(pill.center() - galley.size() / 2.0, galley, Color32::from_gray(235));
         });
@@ -3563,6 +3709,28 @@ impl eframe::App for App {
                     }
                 },
                 Err(e) => self.status = format!("ffmpeg download failed: {e}"),
+            }
+        }
+
+        // Ruffle download finished?
+        let rd_result = self.ruffle_download.as_ref().and_then(|d| d.poll());
+        if self.ruffle_download.is_some() && rd_result.is_none() {
+            ctx.request_repaint_after(Duration::from_millis(150));
+        }
+        if let Some(res) = rd_result {
+            self.ruffle_download = None;
+            match res {
+                Ok(path) => match ruffle::ruffle_from_path(path) {
+                    Some(r) => {
+                        ruffle::save_ruffle_path(&r);
+                        self.ruffle = Some(r);
+                        self.swf_message("Ruffle downloaded and ready: press Play in Ruffle.");
+                    }
+                    None => self.swf_message("Ruffle was downloaded but could not be found."),
+                },
+                Err(e) => self.swf_message(format!(
+                    "Ruffle download failed: {e}. You can get it from ruffle.rs and use \"I already have it...\"."
+                )),
             }
         }
 
@@ -4134,6 +4302,150 @@ impl eframe::App for App {
         if let Some((i, preset)) = export_req {
             self.begin_export_with(vec![ExpTarget::File(i)], Some(preset));
         }
+        // .swf summary window
+        let mut swf_action: Option<SwfAction> = None;
+        if let Some(v) = &mut self.swf_view {
+            let mut open = v.open;
+            let ruffle_ready = self.ruffle.is_some();
+            let downloading = self.ruffle_download.as_ref().map(|d| (d.fraction(), d.done_mb()));
+            egui::Window::new(v.name.as_str())
+                .open(&mut open)
+                .collapsible(false)
+                .default_width(430.0)
+                .show(ctx, |ui| {
+                    let row = |ui: &mut egui::Ui, k: &str, val: String| {
+                        ui.label(k);
+                        ui.label(val);
+                        ui.end_row();
+                    };
+                    match &v.info {
+                        Ok(i) => {
+                            egui::Grid::new("swf_info").num_columns(2).spacing([18.0, 4.0]).show(ui, |ui| {
+                                row(ui, "Flash version", format!("{}", i.version));
+                                let comp = match i.compression {
+                                    obscure_swf::Compression::None => "none",
+                                    obscure_swf::Compression::Zlib => "zlib (CWS)",
+                                    obscure_swf::Compression::Lzma => "LZMA (ZWS)",
+                                };
+                                row(ui, "Compression", comp.to_string());
+                                row(
+                                    ui,
+                                    "File size",
+                                    format!(
+                                        "{:.1} KB (unpacked: {:.1} KB)",
+                                        v.size as f64 / 1024.0,
+                                        i.unpacked_length as f64 / 1024.0
+                                    ),
+                                );
+                                if let Some((w, h)) = i.stage {
+                                    row(ui, "Stage size", format!("{w:.0} x {h:.0} px"));
+                                }
+                                if let Some(f) = i.frame_rate {
+                                    row(ui, "Frame rate", format!("{f:.1} fps"));
+                                }
+                                if let Some(n) = i.frame_count {
+                                    let secs = i.frame_rate.filter(|f| *f > 0.0).map(|f| n as f32 / f);
+                                    let text = match secs {
+                                        Some(s) => format!("{n} (about {s:.1} s)"),
+                                        None => format!("{n}"),
+                                    };
+                                    row(ui, "Frames", text);
+                                }
+                                if let Some(a) = i.actionscript3 {
+                                    row(ui, "ActionScript", if a { "3" } else { "1 / 2" }.to_string());
+                                }
+                            });
+                            ui.add_space(6.0);
+                            if i.tags_listed {
+                                ui.label("Contents:");
+                                egui::Grid::new("swf_counts").num_columns(2).spacing([18.0, 2.0]).show(ui, |ui| {
+                                    row(ui, "Images", i.counts.images.to_string());
+                                    row(ui, "Sounds", i.counts.sounds.to_string());
+                                    row(ui, "Shapes", i.counts.shapes.to_string());
+                                    row(ui, "Movie clips", i.counts.sprites.to_string());
+                                    row(ui, "Fonts", i.counts.fonts.to_string());
+                                    row(ui, "Text fields", i.counts.texts.to_string());
+                                    row(ui, "Scripts", i.counts.scripts.to_string());
+                                });
+                            } else {
+                                ui.label("LZMA-compressed file: its contents cannot be listed.");
+                            }
+                        }
+                        Err(e) => {
+                            ui.colored_label(Color32::from_rgb(230, 120, 110), format!("Cannot read this SWF: {e}"));
+                        }
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(ruffle_ready, egui::Button::new("Play in Ruffle")).clicked() {
+                            swf_action = Some(SwfAction::Play);
+                        }
+                        if ui.button("Export .swf").clicked() {
+                            swf_action = Some(SwfAction::Export);
+                        }
+                    });
+                    if !ruffle_ready {
+                        ui.add_space(6.0);
+                        ui.label(
+                            "Ruffle, a free Flash emulator, is needed to play .swf files. \
+                             It opens the file in its own window.",
+                        );
+                        if let Some((frac, mb)) = downloading {
+                            ui.add(egui::ProgressBar::new(frac).text(format!("Downloading... {mb:.1} MB")));
+                        } else {
+                            ui.horizontal(|ui| {
+                                if cfg!(windows) && ui.button("Download Ruffle").clicked() {
+                                    swf_action = Some(SwfAction::Download);
+                                }
+                                if ui.button("I already have it...").clicked() {
+                                    swf_action = Some(SwfAction::Locate);
+                                }
+                            });
+                        }
+                    }
+                    if let Some(m) = &v.message {
+                        ui.separator();
+                        ui.label(m.as_str());
+                    }
+                });
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                open = false;
+            }
+            v.open = open;
+        }
+        if self.swf_view.as_ref().map(|v| !v.open).unwrap_or(false) {
+            self.swf_view = None;
+        }
+        match swf_action {
+            Some(SwfAction::Play) => self.play_swf(),
+            Some(SwfAction::Export) => {
+                if let Some(i) = self.swf_view.as_ref().map(|v| v.index) {
+                    self.begin_export_with(vec![ExpTarget::File(i)], Some(ExportPreset::Raw));
+                }
+            }
+            Some(SwfAction::Download) => {
+                if self.ruffle_download.is_none() {
+                    self.ruffle_download = Some(ruffle::RuffleDownload::start(ruffle::exe_dir(), ctx));
+                    self.swf_message("Downloading Ruffle...");
+                }
+            }
+            Some(SwfAction::Locate) => {
+                if let Some(p) = rfd::FileDialog::new().set_title("Locate Ruffle").pick_file() {
+                    match ruffle::ruffle_from_path(p) {
+                        Some(r) => {
+                            ruffle::save_ruffle_path(&r);
+                            self.ruffle = Some(r);
+                            self.swf_message("Ruffle found: press Play in Ruffle.");
+                        }
+                        None => self.swf_message(
+                            "That file does not look like Ruffle (its name should contain \"ruffle\").",
+                        ),
+                    }
+                }
+            }
+            None => {}
+        }
+
         let mut close_model = false;
         if let Some(mv) = &mut self.model_viewer {
             if !mv.ui(ctx) {
@@ -4429,6 +4741,25 @@ impl App {
 #[cfg(test)]
 mod text_search_tests {
     use super::*;
+
+    #[test]
+    fn lua_bytecode_is_summarised() {
+        let mut d = b"\x1bLuaQ\x00\x01\x04\x04\x04\x08\x00".to_vec();
+        d.extend(b"\x06\x00\x00\x00print\x00\x01");
+        let s = lua_bytecode_summary(&d).unwrap();
+        assert!(s.contains("Compiled Lua 5.1"));
+        assert!(s.contains("\nprint\n"));
+        assert!(lua_bytecode_summary(b"print('hello')").is_none());
+    }
+
+    #[test]
+    fn animation_files_are_recognised() {
+        assert!(is_animation_file("walk.ANI"));
+        assert!(is_animation_file("anims_pc.zwo"));
+        assert!(is_animation_file("crabanim.zwo"));
+        assert!(!is_animation_file("boy1_pc.zwo"));
+        assert!(!is_animation_file("anim.txt"));
+    }
 
     #[test]
     fn decodes_the_usual_text_encodings() {
