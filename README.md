@@ -62,7 +62,9 @@ The panel under the mouse pointer has the keyboard focus (clicking also sets it)
 
 ## Credits
 
-Texture formats come from the reverse-engineering work in [ObsCure-Texture-Editor](https://github.com/HeitorSpectre/ObsCure-Texture-Editor) (MIT; HeitorSpectre, Evil Trainer, marcos_haf)
+Texture formats come from the reverse-engineering work in [ObsCure-Texture-Editor](https://github.com/HeitorSpectre/ObsCure-Texture-Editor) (MIT; HeitorSpectre, Evil Trainer, marcos_haf).
+
+The `.lng` format comes from [ObsCure-Text-Editor](https://github.com/HeitorSpectre/ObsCure-Text-Editor) (MIT; HeitorSpectre, Evil Trainer, marcos_haf).
 
 The `.hvp` format comes from [obscure-hvp](https://github.com/YouKnow-sys/obscure-hvp) (MIT; YouKnow-sys).
 
