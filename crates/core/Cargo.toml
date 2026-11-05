@@ -5,6 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-# Troque por `rev = "<commit>"` depois, para fixar a versão.
-hvp-archive = { git = "https://github.com/YouKnow-sys/obscure-hvp" }
+# Fixed on the commit the program was built with (b69c5482): once it is in the local cargo git cache,
+# cargo does not need the network to resolve it again.
+hvp-archive = { git = "https://github.com/YouKnow-sys/obscure-hvp", rev = "b69c5482" }
 self_cell = "1"

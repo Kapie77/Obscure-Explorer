@@ -10,6 +10,8 @@
 //!   string pool: NUL-terminated strings
 //! Tag and attribute names are stored as CRC32 hashes; a dictionary (`hashes.json`) maps them back.
 
+pub mod json;
+
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
@@ -52,21 +54,21 @@ fn parse_crc_key(key: &str) -> Option<u32> {
 /// Accepts the formats of the converter: a JSON object (key = CRC as number / 0x hex, or a name),
 /// a JSON array of names, or a text file with one name per line.
 pub fn load_dictionary_str(content: &str) -> Dictionary {
-    use serde_json::Value;
+    use json::Json;
     let mut map = Dictionary::new();
-    match serde_json::from_str::<Value>(content) {
-        Ok(Value::Object(obj)) => {
-            for (key, value) in obj {
+    match json::parse(content) {
+        Some(Json::Object(entries)) => {
+            for (key, value) in entries {
                 if let Some(name) = value.as_str() {
                     let crc = parse_crc_key(&key).unwrap_or_else(|| crc32(&key));
                     map.insert(crc, name.to_owned());
                 }
             }
         }
-        Ok(Value::Array(items)) => {
+        Some(Json::Array(items)) => {
             for item in items {
-                if let Some(name) = item.as_str() {
-                    map.insert(crc32(name), name.to_owned());
+                if let Json::Str(name) = item {
+                    map.insert(crc32(&name), name);
                 }
             }
         }

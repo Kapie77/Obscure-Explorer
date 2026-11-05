@@ -107,15 +107,16 @@ fn download_ruffle(dest_dir: &Path, done: &AtomicU64, total: &AtomicU64) -> Resu
         .map_err(|e| format!("could not ask GitHub for the latest Ruffle: {e}"))?
         .into_string()
         .map_err(|e| format!("unexpected answer from GitHub: {e}"))?;
-    let json: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("unexpected answer from GitHub: {e}"))?;
-    let url = json["assets"]
-        .as_array()
+    let json = obscure_xmc::json::parse(&body)
+        .ok_or_else(|| "unexpected answer from GitHub".to_string())?;
+    let url = json
+        .get("assets")
+        .and_then(|a| a.as_array())
         .and_then(|assets| {
             assets.iter().find_map(|a| {
-                let name = a["name"].as_str()?.to_ascii_lowercase();
+                let name = a.get("name")?.as_str()?.to_ascii_lowercase();
                 if name.ends_with(".zip") && name.contains("windows") && name.contains("x86_64") {
-                    a["browser_download_url"].as_str().map(str::to_string)
+                    a.get("browser_download_url")?.as_str().map(str::to_string)
                 } else {
                     None
                 }

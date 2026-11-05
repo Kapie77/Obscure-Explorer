@@ -564,6 +564,8 @@ struct App {
     text_view: Option<TextView>,
     model_viewer: Option<model3d::ModelViewer>,
     swf_view: Option<SwfView>,
+    /// Decoded texture packs used by the 3D viewer (a few are kept, they are slow to decode).
+    tex_cache: HashMap<usize, Arc<Vec<(String, Arc<model3d::TexImage>)>>>,
     ruffle: Option<ruffle::Ruffle>,
     ruffle_tried: bool,
     ruffle_download: Option<ruffle::RuffleDownload>,
@@ -626,6 +628,7 @@ impl Default for App {
             text_view: None,
             model_viewer: None,
             swf_view: None,
+            tex_cache: HashMap::new(),
             ruffle: None,
             ruffle_tried: false,
             ruffle_download: None,
@@ -869,6 +872,7 @@ impl App {
         self.text_view = None;
         self.model_viewer = None;
         self.swf_view = None;
+        self.tex_cache.clear();
         self.video = None;
         self.export = None;
         self.player = None;
@@ -1197,73 +1201,122 @@ impl App {
             None => (String::new(), path.clone()),
         };
         let stem = file.rsplit_once('.').map(|(s, _)| s.to_string()).unwrap_or_else(|| file.clone());
-        let mut by_name: HashMap<String, Arc<model3d::TexImage>> = HashMap::new();
-        let mut add = |t: Texture| {
-            by_name.entry(t.name.to_lowercase()).or_insert_with(|| {
-                Arc::new(model3d::TexImage { w: t.width as usize, h: t.height as usize, rgba: t.rgba })
-            });
-        };
 
-        // 1) texture packs: same name as the model, else every pack in the same folder
-        let in_dir = |p: &str| match p.rsplit_once('/') {
-            Some((d, _)) => d.eq_ignore_ascii_case(&dir),
-            None => dir.is_empty(),
-        };
-        let mut packs: Vec<usize> = Vec::new();
-        let mut same_dir_packs: Vec<usize> = Vec::new();
-        for (i, e) in entries.iter().enumerate() {
-            if !in_dir(&e.path) {
-                continue;
-            }
-            let name = base_name(&e.path);
-            if is_pack_ext(&ext_of(name)) {
-                same_dir_packs.push(i);
-                let s = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name);
-                if s.eq_ignore_ascii_case(&stem) {
-                    packs.push(i);
-                }
-            }
-        }
-        if packs.is_empty() {
-            packs = same_dir_packs.into_iter().take(8).collect();
-        }
-        for i in packs {
-            if let Ok(d) = archive.read(i) {
-                if let Some(Ok(textures)) = decode_any(&entries[i].path, &d, &self.game_ctx) {
-                    for t in textures {
-                        add(t);
-                    }
-                }
-            }
-        }
-
-        // 2) loose images (.bmp/.tga/.png/.jpg) named like the texture
+        // textures the materials ask for
         let wanted: HashSet<String> = model
             .materials
             .iter()
-            .map(|m| m.texture.to_lowercase())
+            .map(|m| model3d::texture_key(&m.texture))
             .filter(|n| !n.is_empty())
             .collect();
-        let mut loose: HashMap<String, usize> = HashMap::new();
-        for (i, e) in entries.iter().enumerate() {
-            let name = base_name(&e.path);
-            let ext = ext_of(name);
-            if !matches!(ext.as_str(), "bmp" | "tga" | "png" | "jpg" | "jpeg") {
-                continue;
-            }
-            let s = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name).to_lowercase();
-            if wanted.contains(&s) {
-                // prefer the file next to the model
-                if in_dir(&e.path) || !loose.contains_key(&s) {
-                    loose.insert(s, i);
+        let mut by_name: HashMap<String, Arc<model3d::TexImage>> = HashMap::new();
+        let missing =
+            |m: &HashMap<String, Arc<model3d::TexImage>>| wanted.iter().any(|w| !m.contains_key(w));
+
+        // Where the textures can be, in the order they are tried (stopping as soon as all were found):
+        //  A) packs next to the model (Obscure 1; levels: lvl_pc.zwo + lvl_pc.dic)
+        //  B) packs in the parent folder (Obscure 2 characters: boy1/skins/boy1_pc.zwo, boy1/boy1_pc.dic)
+        //  C) shared pools at the root of an HVP (Obscure 2 weapons / items: datapack/texpc_pc.dic)
+        let packs_in = |d: &str| -> Vec<usize> {
+            entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
+                    let (edir, name) = match e.path.rsplit_once('/') {
+                        Some((ed, n)) => (ed, n),
+                        None => ("", e.path.as_str()),
+                    };
+                    edir.eq_ignore_ascii_case(d) && is_pack_ext(&ext_of(name))
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        let same = packs_in(&dir);
+        let mut named_like_model: Vec<usize> = same
+            .iter()
+            .copied()
+            .filter(|&i| {
+                let n = base_name(&entries[i].path);
+                n.rsplit_once('.').map(|(s, _)| s).unwrap_or(n).eq_ignore_ascii_case(&stem)
+            })
+            .collect();
+        if named_like_model.is_empty() {
+            named_like_model = same.into_iter().take(8).collect();
+        }
+        groups.push(named_like_model);
+        if let Some((parent, _)) = dir.rsplit_once('/') {
+            groups.push(packs_in(parent).into_iter().take(8).collect());
+        }
+        let own_root = dir.split('/').next().unwrap_or("").to_string();
+        let mut roots: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.path.matches('/').count() == 1 && is_pack_ext(&ext_of(base_name(&e.path))))
+            .map(|(i, _)| i)
+            .collect();
+        roots.sort_by_key(|&i| !entries[i].path.starts_with(&own_root)); // the model's own HVP first
+        groups.push(roots.into_iter().take(8).collect());
+
+        'search: for group in groups {
+            for i in group {
+                if !missing(&by_name) {
+                    break 'search;
+                }
+                let textures = match self.tex_cache.get(&i) {
+                    Some(t) => t.clone(),
+                    None => {
+                        let loaded = Arc::new(decode_pack_textures(
+                            &**archive,
+                            &entries[i].path,
+                            i,
+                            &self.game_ctx,
+                        ));
+                        if self.tex_cache.len() >= 3 {
+                            self.tex_cache.clear();
+                        }
+                        self.tex_cache.insert(i, loaded.clone());
+                        loaded
+                    }
+                };
+                for (key, img) in textures.iter() {
+                    by_name.entry(key.clone()).or_insert_with(|| img.clone());
                 }
             }
         }
-        for (name, i) in loose {
-            if let Some(d) = archive.read(i).ok() {
-                if let Some(Ok(textures)) = decode_any(&entries[i].path, &d, &self.game_ctx) {
-                    if let Some(t) = textures.into_iter().next() {
-                        add(Texture { name: name.clone(), ..t });
+
+        // loose images (.bmp/.tga/.png/.jpg) named like a texture that is still missing
+        if missing(&by_name) {
+            let in_dir = |p: &str| match p.rsplit_once('/') {
+                Some((d, _)) => d.eq_ignore_ascii_case(&dir),
+                None => dir.is_empty(),
+            };
+            let mut loose: HashMap<String, usize> = HashMap::new();
+            for (i, e) in entries.iter().enumerate() {
+                let name = base_name(&e.path);
+                if !matches!(ext_of(name).as_str(), "bmp" | "tga" | "png" | "jpg" | "jpeg") {
+                    continue;
+                }
+                let key = model3d::texture_key(name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name));
+                if wanted.contains(&key) && !by_name.contains_key(&key) {
+                    // prefer the file next to the model
+                    if in_dir(&e.path) || !loose.contains_key(&key) {
+                        loose.insert(key, i);
+                    }
+                }
+            }
+            for (key, i) in loose {
+                if let Ok(d) = archive.read(i) {
+                    if let Some(Ok(textures)) = decode_any(&entries[i].path, &d, &self.game_ctx) {
+                        if let Some(t) = textures.into_iter().next() {
+                            by_name.entry(key).or_insert_with(|| {
+                                Arc::new(model3d::TexImage {
+                                    w: t.width as usize,
+                                    h: t.height as usize,
+                                    rgba: t.rgba,
+                                })
+                            });
+                        }
                     }
                 }
             }
@@ -2290,6 +2343,28 @@ fn sanitize(name: &str) -> String {
     name.chars()
         .map(|c| if "/\\:*?\"<>|".contains(c) || c.is_control() { '_' } else { c })
         .collect()
+}
+
+/// Decodes every texture of a pack (.dic / .dip); the keys are `model3d::texture_key` names.
+fn decode_pack_textures(
+    archive: &dyn Archive,
+    path: &str,
+    index: usize,
+    ctx: &Context,
+) -> Vec<(String, Arc<model3d::TexImage>)> {
+    let Ok(d) = archive.read(index) else { return Vec::new() };
+    match decode_any(path, &d, ctx) {
+        Some(Ok(textures)) => textures
+            .into_iter()
+            .map(|t| {
+                (
+                    model3d::texture_key(&t.name),
+                    Arc::new(model3d::TexImage { w: t.width as usize, h: t.height as usize, rgba: t.rgba }),
+                )
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn base_name(path: &str) -> &str {

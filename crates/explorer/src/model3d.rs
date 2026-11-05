@@ -120,7 +120,20 @@ fn mul_point4(m: &Mat4, p: [f32; 3]) -> [f32; 4] {
 
 // ---------------------------------------------------------------- scene building
 
-/// Flattens a model into world-space triangles. `tex_by_name` is keyed by lower-case texture name.
+/// Key used to match a material's texture name with the textures of a pack: lower case, without
+/// an image extension (`W_Bat.dds` and `w_bat` are the same texture).
+pub fn texture_key(name: &str) -> String {
+    let mut k = name.trim().to_lowercase();
+    for ext in [".dds", ".bmp", ".tga", ".png", ".jpg", ".jpeg"] {
+        if let Some(stripped) = k.strip_suffix(ext) {
+            k = stripped.to_string();
+            break;
+        }
+    }
+    k
+}
+
+/// Flattens a model into world-space triangles. `tex_by_name` is keyed by `texture_key`.
 pub fn build_scene(model: &Model, tex_by_name: &HashMap<String, Arc<TexImage>>) -> Scene {
     let mat_tex: HashMap<String, String> = model
         .materials
@@ -133,7 +146,7 @@ pub fn build_scene(model: &Model, tex_by_name: &HashMap<String, Arc<TexImage>>) 
         .map(|m| MaterialStatus {
             name: m.name.clone(),
             texture: m.texture.clone(),
-            found: tex_by_name.contains_key(&m.texture.to_lowercase()),
+            found: tex_by_name.contains_key(&texture_key(&m.texture)),
         })
         .collect();
 
@@ -173,7 +186,7 @@ pub fn build_scene(model: &Model, tex_by_name: &HashMap<String, Arc<TexImage>>) 
         for mn in &src.material_names {
             let mut slot = -1;
             if let Some(tex_name) = mat_tex.get(&mn.to_lowercase()) {
-                let key = tex_name.to_lowercase();
+                let key = texture_key(tex_name);
                 if let Some(img) = tex_by_name.get(&key) {
                     slot = match slot_of.get(&key) {
                         Some(s) => *s,

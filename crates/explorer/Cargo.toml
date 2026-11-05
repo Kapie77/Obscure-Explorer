@@ -11,7 +11,6 @@ obscure-models = { path = "../models" }
 obscure-xmc = { path = "../xmc" }
 obscure-lng = { path = "../lng" }
 obscure-swf = { path = "../swf" }
-serde_json = "1"
 eframe = "0.29"
 rfd = "0.15"
 image = { version = "0.25", default-features = false, features = ["png"] }
