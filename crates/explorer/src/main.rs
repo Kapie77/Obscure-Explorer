@@ -171,6 +171,7 @@ enum Action {
     PlayerNext,
     PlayerClose,
     DownloadFfmpeg,
+    RecheckFfmpeg,
     LocateFfmpeg,
     DismissFfmpeg,
     ToggleSelect(String, usize),
@@ -4465,11 +4466,17 @@ impl eframe::App for App {
                             "Ruffle, a free Flash emulator, is needed to play .swf files. \
                              It opens the file in its own window.",
                         );
+                        if cfg!(target_os = "linux") {
+                            ui.label(
+                                "The downloaded build needs the usual graphics and sound libraries of \
+                                 a Linux desktop (Vulkan or OpenGL, X11 or Wayland, ALSA).",
+                            );
+                        }
                         if let Some((frac, mb)) = downloading {
                             ui.add(egui::ProgressBar::new(frac).text(format!("Downloading... {mb:.1} MB")));
                         } else {
                             ui.horizontal(|ui| {
-                                if cfg!(windows) && ui.button("Download Ruffle").clicked() {
+                                if ruffle::download_supported() && ui.button("Download Ruffle").clicked() {
                                     swf_action = Some(SwfAction::Download);
                                 }
                                 if ui.button("I already have it...").clicked() {
@@ -4500,7 +4507,7 @@ impl eframe::App for App {
             }
             Some(SwfAction::Download) => {
                 if self.ruffle_download.is_none() {
-                    self.ruffle_download = Some(ruffle::RuffleDownload::start(ruffle::exe_dir(), ctx));
+                    self.ruffle_download = Some(ruffle::RuffleDownload::start(media::tools_dir(), ctx));
                     self.swf_message("Downloading Ruffle...");
                 }
             }
@@ -4593,14 +4600,23 @@ impl eframe::App for App {
                 Action::PlayerClose => self.player = None,
                 Action::DownloadFfmpeg => {
                     if self.ff_download.is_none() {
-                        let dir = std::env::current_exe()
-                            .ok()
-                            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-                            .unwrap_or_else(|| PathBuf::from("."));
+                        let dir = media::tools_dir();
                         self.ff_download = Some(FfDownload::start(dir, ctx));
                         self.status = "Downloading ffmpeg...".to_string();
                     }
                 }
+                Action::RecheckFfmpeg => match find_ffmpeg() {
+                    Some(ff) => {
+                        save_ffmpeg_path(&ff);
+                        self.ffmpeg = Some(ff);
+                        self.ffmpeg_prompt = false;
+                        self.thumbs.vid.clear();
+                        self.status = "ffmpeg found.".to_string();
+                    }
+                    None => {
+                        self.status = "ffmpeg is still not found. Install it and press Check again, or use \"I already have it...\".".to_string();
+                    }
+                },
                 Action::LocateFfmpeg => {
                     if let Some(p) = rfd::FileDialog::new().set_title("Locate ffmpeg").pick_file() {
                         match ffmpeg_from_path(p) {
@@ -4690,8 +4706,35 @@ impl App {
                         "It can be downloaded automatically (about 90 MB, from gyan.dev - the \
                          Windows builds linked from ffmpeg.org). This only happens once.",
                     );
+                } else if media::ffmpeg_download_supported() {
+                    ui.label(
+                        "A ready-to-use static build can be downloaded automatically (about 80 MB, \
+                         from the ffmpeg-static project on GitHub). Nothing is installed in your \
+                         system and this only happens once.",
+                    );
                 } else {
                     ui.label("Install ffmpeg with your package manager, then point to it below.");
+                }
+                if cfg!(target_os = "linux") {
+                    ui.add_space(4.0);
+                    match media::ffmpeg_install_command() {
+                        Some((distro, cmd)) => {
+                            ui.label(format!("Or install it with the package manager of your system ({distro}):"));
+                            ui.horizontal(|ui| {
+                                ui.monospace(cmd);
+                                if ui.button("Copy").clicked() {
+                                    ui.output_mut(|o| o.copied_text = cmd.to_string());
+                                }
+                            });
+                            ui.label("Then press \"Check again\".");
+                        }
+                        None => {
+                            ui.label(
+                                "Or install the ffmpeg package with your distribution's package manager, \
+                                 then press \"Check again\".",
+                            );
+                        }
+                    }
                 }
                 ui.add_space(10.0);
                 if let Some(d) = &self.ff_download {
@@ -4702,8 +4745,11 @@ impl App {
                     ui.label("The pop-up closes by itself when it is done.");
                 } else {
                     ui.horizontal(|ui| {
-                        if cfg!(windows) && ui.button("Download ffmpeg").clicked() {
+                        if media::ffmpeg_download_supported() && ui.button("Download ffmpeg").clicked() {
                             actions.push(Action::DownloadFfmpeg);
+                        }
+                        if !cfg!(windows) && ui.button("Check again").clicked() {
+                            actions.push(Action::RecheckFfmpeg);
                         }
                         if ui.button("I already have it...").clicked() {
                             actions.push(Action::LocateFfmpeg);

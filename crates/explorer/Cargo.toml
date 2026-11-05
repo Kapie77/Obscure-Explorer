@@ -18,3 +18,4 @@ rodio = { version = "0.20", features = ["symphonia-all"] }
 lewton = "0.10"
 ureq = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"

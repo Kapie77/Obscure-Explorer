@@ -104,8 +104,79 @@ fn command(path: &Path) -> Command {
     c
 }
 
+/// Folder for the tools the program downloads (ffmpeg, Ruffle) and for the small files that remember
+/// where they are: next to the program, or - when that folder is read-only, like /usr/bin on
+/// Linux - the user's data folder (~/.local/share/obscure-explorer).
+pub fn tools_dir() -> PathBuf {
+    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    if let Some(d) = &exe_dir {
+        let probe = d.join(".obscure_write_test");
+        if std::fs::write(&probe, b"x").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            return d.clone();
+        }
+    }
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")));
+    if let Some(b) = base {
+        let d = b.join("obscure-explorer");
+        if std::fs::create_dir_all(&d).is_ok() {
+            return d;
+        }
+    }
+    exe_dir.unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Automatic download of ffmpeg exists for Windows (gyan.dev build) and Linux (static build).
+pub fn ffmpeg_download_supported() -> bool {
+    cfg!(windows) || cfg!(target_os = "linux")
+}
+
+/// Package-manager command that installs ffmpeg, from the `ID` / `ID_LIKE` of /etc/os-release.
+pub fn install_command_for(id: &str, id_like: &str) -> Option<&'static str> {
+    let ids: Vec<String> = std::iter::once(id)
+        .chain(id_like.split_whitespace())
+        .map(|s| s.trim_matches('"').to_ascii_lowercase())
+        .collect();
+    for i in &ids {
+        match i.as_str() {
+            "debian" | "ubuntu" | "linuxmint" | "pop" | "raspbian" | "kali" | "zorin" | "elementary" => {
+                return Some("sudo apt install ffmpeg")
+            }
+            "fedora" | "rhel" | "centos" | "rocky" | "almalinux" => return Some("sudo dnf install ffmpeg-free"),
+            "arch" | "manjaro" | "endeavouros" | "steamos" | "cachyos" => return Some("sudo pacman -S ffmpeg"),
+            "opensuse" | "opensuse-tumbleweed" | "opensuse-leap" | "suse" | "sles" => {
+                return Some("sudo zypper install ffmpeg")
+            }
+            "alpine" => return Some("sudo apk add ffmpeg"),
+            "void" => return Some("sudo xbps-install ffmpeg"),
+            "gentoo" => return Some("sudo emerge media-video/ffmpeg"),
+            "nixos" => return Some("nix-shell -p ffmpeg"),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// (distribution name, install command) for the running Linux system.
+pub fn ffmpeg_install_command() -> Option<(String, &'static str)> {
+    let text = std::fs::read_to_string("/etc/os-release").ok()?;
+    let (mut id, mut like, mut pretty) = (String::new(), String::new(), String::new());
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("ID=") {
+            id = v.trim_matches('"').to_string();
+        } else if let Some(v) = line.strip_prefix("ID_LIKE=") {
+            like = v.trim_matches('"').to_string();
+        } else if let Some(v) = line.strip_prefix("PRETTY_NAME=") {
+            pretty = v.trim_matches('"').to_string();
+        }
+    }
+    install_command_for(&id, &like).map(|c| (if pretty.is_empty() { id } else { pretty }, c))
+}
+
 fn config_paths() -> Vec<PathBuf> {
-    let mut v = Vec::new();
+    let mut v = vec![tools_dir().join("ffmpeg_path.txt")];
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             v.push(dir.join("ffmpeg_path.txt"));
@@ -164,6 +235,14 @@ fn extra_candidates() -> Vec<PathBuf> {
     if let Ok(up) = std::env::var("USERPROFILE") {
         v.push(PathBuf::from(up).join("scoop").join("shims").join("ffmpeg.exe"));
     }
+    if cfg!(unix) {
+        for p in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/snap/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"] {
+            v.push(PathBuf::from(p));
+        }
+        if let Some(h) = std::env::var_os("HOME") {
+            v.push(PathBuf::from(h).join(".local").join("bin").join("ffmpeg"));
+        }
+    }
     v.push(PathBuf::from(r"C:\ProgramData\chocolatey\bin\ffmpeg.exe"));
     v.push(PathBuf::from(r"C:\ffmpeg\bin\ffmpeg.exe"));
     v.push(PathBuf::from(r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"));
@@ -187,6 +266,7 @@ pub fn find_ffmpeg() -> Option<Ffmpeg> {
             candidates.push(dir.join(name));
         }
     }
+    candidates.push(tools_dir().join(name));
     candidates.push(PathBuf::from(".").join(name));
     candidates.push(PathBuf::from(name));
     candidates.extend(extra_candidates());
@@ -931,6 +1011,79 @@ fn download_ffmpeg_zip(dest_dir: &Path, done: &AtomicU64, total: &AtomicU64) -> 
     Ok(out_path)
 }
 
+/// Downloads a static Linux build of ffmpeg (single gzip-compressed binary from the ffmpeg-static
+/// project) and unpacks it as `ffmpeg` into a folder. No installation is needed.
+#[allow(dead_code)]
+fn download_ffmpeg_linux(dest_dir: &Path, done: &AtomicU64, total: &AtomicU64) -> Result<PathBuf, String> {
+    const API: &str = "https://api.github.com/repos/eugeneware/ffmpeg-static/releases/latest";
+    let body = ureq::get(API)
+        .set("User-Agent", "obscure-explorer")
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .map_err(|e| format!("could not ask GitHub for the latest ffmpeg build: {e}"))?
+        .into_string()
+        .map_err(|e| format!("unexpected answer from GitHub: {e}"))?;
+    let json = obscure_xmc::json::parse(&body).ok_or_else(|| "unexpected answer from GitHub".to_string())?;
+    let arch: &[&str] = if cfg!(target_arch = "aarch64") { &["arm64", "aarch64"] } else { &["x64", "x86_64", "amd64"] };
+    let url = json
+        .get("assets")
+        .and_then(|a| a.as_array())
+        .and_then(|assets| {
+            assets.iter().find_map(|a| {
+                let name = a.get("name")?.as_str()?.to_ascii_lowercase();
+                let wanted = name.ends_with(".gz")
+                    && !name.contains(".tar")
+                    && name.contains("linux")
+                    && !name.contains("ffprobe")
+                    && arch.iter().any(|t| name.contains(t));
+                if wanted {
+                    a.get("browser_download_url")?.as_str().map(str::to_string)
+                } else {
+                    None
+                }
+            })
+        })
+        .ok_or_else(|| "no Linux build of ffmpeg was found in the latest ffmpeg-static release".to_string())?;
+
+    std::fs::create_dir_all(dest_dir).map_err(|e| format!("cannot create {}: {e}", dest_dir.display()))?;
+    let resp = ureq::get(&url)
+        .set("User-Agent", "obscure-explorer")
+        .call()
+        .map_err(|e| format!("download failed: {e}"))?;
+    if let Some(len) = resp.header("Content-Length").and_then(|v| v.parse::<u64>().ok()) {
+        total.store(len, Ordering::Relaxed);
+    }
+    let gz_path = dest_dir.join("ffmpeg_download.gz");
+    let mut reader = resp.into_reader();
+    let mut file = std::fs::File::create(&gz_path)
+        .map_err(|e| format!("cannot write {}: {e}", gz_path.display()))?;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| format!("download interrupted: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n]).map_err(|e| format!("cannot write the download: {e}"))?;
+        done.fetch_add(n as u64, Ordering::Relaxed);
+    }
+    drop(file);
+
+    let out_path = dest_dir.join("ffmpeg");
+    let input = std::fs::File::open(&gz_path).map_err(|e| format!("cannot reopen the download: {e}"))?;
+    let mut decoder = flate2::read::GzDecoder::new(input);
+    let mut out = std::fs::File::create(&out_path)
+        .map_err(|e| format!("cannot write {}: {e}", out_path.display()))?;
+    std::io::copy(&mut decoder, &mut out).map_err(|e| format!("cannot unpack ffmpeg: {e}"))?;
+    drop(out);
+    let _ = std::fs::remove_file(&gz_path);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o755));
+    }
+    Ok(out_path)
+}
+
 impl FfDownload {
     pub fn start(dest_dir: PathBuf, ctx: &egui::Context) -> Self {
         let (tx, rx) = channel();
@@ -939,7 +1092,13 @@ impl FfDownload {
         let (d, t) = (done.clone(), total.clone());
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
-            let res = download_ffmpeg_zip(&dest_dir, &d, &t);
+            let res = if cfg!(windows) {
+                download_ffmpeg_zip(&dest_dir, &d, &t)
+            } else if cfg!(target_os = "linux") {
+                download_ffmpeg_linux(&dest_dir, &d, &t)
+            } else {
+                Err("automatic download is not available on this system".to_string())
+            };
             let _ = tx.send(res);
             ctx2.request_repaint();
         });
@@ -962,5 +1121,20 @@ impl FfDownload {
     /// Some(result) once the download has finished.
     pub fn poll(&self) -> Option<Result<PathBuf, String>> {
         self.rx.try_recv().ok()
+    }
+}
+
+#[cfg(test)]
+mod install_hint_tests {
+    use super::*;
+
+    #[test]
+    fn picks_the_package_manager_of_the_distribution() {
+        assert_eq!(install_command_for("ubuntu", "debian"), Some("sudo apt install ffmpeg"));
+        assert_eq!(install_command_for("linuxmint", "ubuntu debian"), Some("sudo apt install ffmpeg"));
+        assert_eq!(install_command_for("fedora", ""), Some("sudo dnf install ffmpeg-free"));
+        assert_eq!(install_command_for("manjaro", "arch"), Some("sudo pacman -S ffmpeg"));
+        assert_eq!(install_command_for("nobara", "fedora"), Some("sudo dnf install ffmpeg-free"));
+        assert_eq!(install_command_for("somethingnew", ""), None);
     }
 }
