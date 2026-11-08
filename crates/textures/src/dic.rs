@@ -56,15 +56,15 @@ fn name_from(bytes: &[u8]) -> String {
 
 /// `.dic` de PC (Obscure 1/2): header big-endian a partir do byte 0.
 pub fn parse_pc_dic(data: &[u8]) -> Result<Vec<Texture>, DecodeError> {
-    parse(data, 0, Endian::Big, false)
+    parse(data, 0, Endian::Big)
 }
 
 /// `.dip` de PC (Obscure 1): little-endian, pula um u32 inicial.
 pub fn parse_dip(data: &[u8]) -> Result<Vec<Texture>, DecodeError> {
-    parse(data, 4, Endian::Little, true)
+    parse(data, 4, Endian::Little)
 }
 
-fn parse(data: &[u8], start: usize, e: Endian, dip: bool) -> Result<Vec<Texture>, DecodeError> {
+fn parse(data: &[u8], start: usize, e: Endian) -> Result<Vec<Texture>, DecodeError> {
     let mut r = Reader::new(data, start);
     let count = r.u32(e)? as usize;
     if count == 0 || count > 4096 {
@@ -106,11 +106,10 @@ fn parse(data: &[u8], start: usize, e: Endian, dip: bool) -> Result<Vec<Texture>
 
         let use_alpha = alpha || one_bit_alpha;
         let decoded: Result<(Vec<u8>, &'static str), DecodeError> = match format {
-            21 => {
-                let order = if dip { Order32::Bgra } else { Order32::Rgba };
-                decode32(first_mip, width, height, order)
-                    .map(|px| (px, if dip { "B8G8R8A8" } else { "R8G8B8A8" }))
-            }
+            // The header of a .dic is big-endian, but the pixels are little-endian in both .dic and .dip:
+            // 32-bit textures are stored as bytes B,G,R,A (Direct3D A8R8G8B8). Reading them as R,G,B,A
+            // swaps red and blue (blue-looking textures).
+            21 => decode32(first_mip, width, height, Order32::Bgra).map(|px| (px, "B8G8R8A8")),
             23 => decode16(first_mip, width, height, Fmt16::R5G6B5, false).map(|px| (px, "R5G6B5")),
             25 => decode16(first_mip, width, height, Fmt16::A1R5G5B5, false).map(|mut px| {
                 if !use_alpha {
@@ -178,12 +177,13 @@ mod tests {
     }
 
     #[test]
-    fn pc_dic_r8g8b8a8() {
+    fn pc_dic_32bit_pixels_are_bgra() {
+        // bytes B,G,R,A: blue, green
         let t = parse_pc_dic(&sample_dic(21)).unwrap();
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].name, "a");
         assert_eq!((t[0].width, t[0].height), (2, 1));
-        assert_eq!(t[0].rgba, [255, 0, 0, 255, 0, 255, 0, 255]);
+        assert_eq!(t[0].rgba, [0, 0, 255, 255, 0, 255, 0, 255]);
     }
 
     #[test]

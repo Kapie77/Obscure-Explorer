@@ -2416,8 +2416,8 @@ fn file_type(name: &str, ext: &str) -> (&'static str, Color32) {
 
 fn type_info(ext: &str) -> (&'static str, Color32) {
     match ext {
-        "dic" | "dip" => ("Texture pack", Color32::from_rgb(120, 86, 200)),
-        "hvt" | "hvi" | "xbr" => ("Texture", Color32::from_rgb(120, 86, 200)),
+        "dic" | "dip" | "xbr" => ("Texture pack", Color32::from_rgb(120, 86, 200)),
+        "hvt" | "hvi" => ("Texture", Color32::from_rgb(120, 86, 200)),
         "bmp" | "tga" | "png" | "jpg" | "jpeg" => ("Image", Color32::from_rgb(150, 90, 190)),
         "wav" | "ogg" | "mp3" | "flac" | "xwma" => ("Audio", Color32::from_rgb(30, 150, 150)),
         "bik" | "ogv" => ("Video", Color32::from_rgb(200, 70, 70)),

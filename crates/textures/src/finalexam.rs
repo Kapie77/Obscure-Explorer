@@ -203,7 +203,7 @@ fn crop_rgba(full: &[u8], src_w: usize, dst_w: usize, dst_h: usize) -> Vec<u8> {
 }
 
 /// PS3 swizzle (bit interleaving of x and y, square-ish textures).
-fn swizzle_offset(x: usize, y: usize, w: usize, h: usize) -> usize {
+pub(crate) fn swizzle_offset(x: usize, y: usize, w: usize, h: usize) -> usize {
     let (mut offset, mut xs, mut ys, mut dest) = (0usize, 0usize, 0usize, 0usize);
     while (1usize << xs) < w || (1usize << ys) < h {
         if (1usize << xs) < w {

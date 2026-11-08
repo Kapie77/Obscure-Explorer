@@ -1,71 +1,95 @@
 # Obscure Explorer
 
-Read-only asset explorer (FModel style) for Obscure 1, Obscure 2 and Final Exam:
-browse, search, preview textures and extract files. No re-encoding / repacking.
+A read-only asset explorer (FModel style) for **Obscure 1**, **Obscure 2** and **Final Exam**: browse the `.hvp`
+archives and loose game files, search, preview, and export. Nothing is re-encoded or repacked.
 
-![image1](https://i.ibb.co/CpzByKc3/obscureexplorer3.png)
-![image2](https://i.ibb.co/SDhxGNZN/obscureexplorer2.png)
-![image3](https://i.ibb.co/zv6BMY9/obscure4.png)
-![image4](https://i.ibb.co/27BdCLkh/obscure5.png)
-![image5](https://i.ibb.co/nszDqqpJ/obscure6.png)
-![image6](https://i.ibb.co/HfsppZVL/obscure7.png)
-![image7](https://i.ibb.co/209rFygw/obscure8.png)
+Português: [README.pt.md](README.pt.md)
 
-## Usage
+## What it opens
 
-1. `cargo run -p obscure-explorer --release`
-2. "Open folder..." and pick the game folder: every `.hvp` inside is opened (each shows up as a folder named after the file)
-   together with all loose files (e.g. the `data` folder with `.ogg` audio, `.exe`, `.dll`, ...). "Open HVP..." opens a
-   single archive. The game is detected automatically; pick the Platform when needed (PC has Steam, GOG and Retail entries; Steam and GOG installs are recognised by their launcher files).
-3. Obscure 2: copy the `hashes` folder from the obscure-hvp repository next to the executable
-   (or into the directory you run `cargo run` from), otherwise file names will be wrong.
-4. The folder tree (left, with its own filter box) lists folders and files; the center view shows the current folder as
-   tiles or a list. Search all files with the center search box.
-5. Clicking opens things in the middle, FModel style (unsupported files do nothing):
-   - folders open; texture packs (`.dic`, `.dip`) open like folders with all their images (tinted purple, tagged PACK);
-   - images (`.bmp`, `.tga`, `.png`, `.jpg`, the game's `.hvt`) and the images inside a pack open in a full-window viewer
-     (wheel = zoom, drag = pan, double-click = fit / 100%, Left / Right or the Previous / Next buttons = other images of the same folder or pack, Esc = close);
-   - audio (`.wav`, `.mp3`, `.ogg`, `.flac`) plays in the player bar at the bottom (previous / next, seek, volume, auto-next);
-     the play badge on the thumbnail toggles play / pause;
-   - video (`.bik`, `.ogv`) opens a full-window player (seek bar, previous / next video, Left / Right = -5 s / +5 s, N / P, Space, Esc). It needs ffmpeg:
-     a pop-up offers to download it automatically (Windows) or to locate it;
-   - text files (`.txt`, `.ini`, `.xml`, `.lng`, `.cre`, `.sub`, ...) open in a text window;
-   - 3D models (`.zwo`, Obscure 1 and 2) open in a 3D viewer (drag = orbit, right-drag = pan, wheel = zoom, F = frame):
-     textured / solid / wireframe, per-mesh visibility and a "Z axis is up" switch. Textures come from the `.dic` / `.dip`
-     with the same name in the same folder. Skeletons and animations are not read yet (skinned meshes show their rest pose).
-     Animation files (`anims_pc.zwo`, `crabanim.zwo`, ... anything named `*anim*.zwo`) carry an orange ANIM tag: they hold no geometry.
-6. Selecting: tick the checkbox that appears on a tile, or Ctrl+click / Shift+click, or "Select all" (Ctrl+A).
-   "Export..." (toolbar) exports the selection; right-click any item, in the center or in the folder tree, to export it
-   (folders are exported recursively). The export window can write the raw files (keeping the folder structure) and/or
-   textures as PNG (images inside a pack become separate PNG files), into a folder you choose.
-7. Theme: Dark / Light (top right).
+| Kind | Files | What you get |
+|------|-------|--------------|
+| Archives | `.hvp` (a whole game folder, or one archive) | every archive shows as a folder; the tree and the tile / list view work like a file explorer |
+| Textures | `.dic` (Obscure 2 PC), `.dip` (Obscure 1 PC), `.xbr` (Obscure 1 Xbox), `.dic` and `.hvt` (Obscure 2 Wii), `.dic` (PSP), `.dic` and `.hvi` (PS2), `.hvt` (Final Exam PC / PS3 / Xbox 360), `.bmp` `.tga` `.png` `.jpg` | thumbnails, full-window viewer, export as PNG. Packs open like folders |
+| Audio | `.wav` `.mp3` `.ogg` `.flac`, `.xwma` (Final Exam) | player bar with seek, volume, previous / next. `.xwma` needs ffmpeg |
+| Video | `.bik` (Bink), `.ogv` | full-window player with seek and previous / next. Needs ffmpeg |
+| 3D models | `.zwo` (Obscure 1 and 2) | 3D viewer: textured / solid / wireframe, mesh list, texture status. Skinned meshes show their rest pose |
+| Text | `.txt` `.ini` `.xml` `.csv` `.srt` `.lua` `.cre` `.sub` ... | text window with search (UTF-8, UTF-16 and Windows-1252). Compiled Lua shows its strings |
+| Text (converted) | `.lng` (all three games) | readable text; export as `.lng`, `.txt` or both |
+| Text (converted) | `.xmc` (Obscure 2) | XML; export as `.xmc`, `.xml` or both |
+| Flash | `.swf` (Final Exam) | summary window and "Play in Ruffle" |
+| Animation data | `.ani` (Final Exam), `*anim*.zwo` | orange **ANIM** tag; no preview yet |
+
+Not supported yet: skeletons and animations of `.zwo`, PS2 `.zwo`,
+`.hoe` files.
+
+## Getting started
+
+1. Build and run: `cargo run -p obscure-explorer --release` (a recent stable Rust; a release build opens without a console window).
+2. **Open folder...** and pick the game folder: every `.hvp` inside is opened (each one shows up as a folder named after
+   the file) together with the loose files (`data` folder, `.exe`, ...). **Open HVP...** opens a single archive.
+3. The game is detected automatically. Pick the **Platform** when needed: PC has Steam, GOG and Retail entries (Steam and
+   GOG installs are recognised by their launcher files).
+4. Obscure 2: copy the `hashes` folder of [obscure-hvp](https://github.com/YouKnow-sys/obscure-hvp) next to the program,
+   otherwise the file names inside the archives are wrong.
+5. Click things to open them. Right-click to export. Ctrl+click, Shift+click or the checkbox on a tile select several
+   items; **Export...** writes the raw files (keeping the folder structure) and / or converted copies (PNG, XML, TXT).
+
+If something crashes, the program writes `obscure_explorer_crash.log` next to the executable.
+
+## External tools
+
+These are not bundled; each pop-up offers to set them up the first time they are needed.
+
+- **ffmpeg** decodes `.bik`, `.ogv` and `.xwma`. Windows: downloaded automatically (gyan.dev build). Linux: a static build
+  is downloaded, or the pop-up shows the install command of your distribution. You can also point to an existing ffmpeg.
+- **Ruffle** (free Flash emulator) plays `.swf` files in its own window. Downloaded from its GitHub releases (Windows and
+  Linux) or located by you.
+- **hashes.json** gives names to the tags and attributes of `.xmc` files (put it next to the program, or use
+  "Locate hashes.json..." in the window). Without it they show as `tag_XXXXXXXX`.
+
+Downloaded tools and the files that remember their location are kept next to the program, or in
+`~/.local/share/obscure-explorer` when that folder is read-only.
+
+## 3D models
+
+Click a `.zwo` to open the viewer: drag to orbit, right-drag to pan, wheel to zoom, **F** to frame, **Esc** to close.
+Textures are looked up in the `.dic` / `.dip` next to the model, then in the parent folder (Obscure 2 characters:
+`boy1/skins/boy1_pc.zwo` uses `boy1/boy1_pc.dic`), then in the shared packs at the root of each HVP (weapons and items
+use `datapack/texpc_pc.dic`).
 
 ## Keyboard
 
-The panel under the mouse pointer has the keyboard focus (clicking also sets it).
-- Items: Arrow keys or W/A/S/D move the cursor (in the grid, up/down jump a row); Enter opens it like a click. Ctrl+A selects all, Esc clears the selection.
-- Folder tree: Up/Down (W/S) move between folders; Right (D) expands or opens a pack; Left (A) collapses or goes to the parent.
-- Backspace: up one level. Space: play / pause.
+The panel under the mouse pointer has the keyboard focus.
 
-## Layout
+- Items: arrows or W/A/S/D move the cursor, Enter opens, Ctrl+A selects all, Esc clears the selection, Backspace goes up.
+- Folder tree: Up/Down move, Right expands or opens a pack, Left collapses or goes to the parent.
+- Audio / video: Space plays or pauses; in the video player Left / Right seek 5 s, N / P change video.
+- Image viewer: Left / Right (or A / D) change image, wheel zooms, drag pans, double-click toggles fit / 100%.
+- Text windows: Ctrl+F searches, Enter / Shift+Enter (or F3) jump between matches.
 
-- `crates/core`: `Archive` trait, `DirArchive` (extracted folder), `HvpArchive` (reads .hvp directly), `DirNode` (tree), `Context` (game + platform).
-- `crates/models`: `.zwo` model reader (ported from zwoBlender by Al-Hydra).
-- `crates/textures`: `TextureFormat` trait, pixel decoders (`pixel.rs`), BC1/2/3 (`bc.rs`), PC .dic/.dip parsers (`dic.rs`).
-- `crates/explorer`: egui/eframe 0.29 GUI.
+## Project layout
 
-## Next steps
+| Crate | Purpose |
+|-------|---------|
+| `crates/core` | `Archive` trait, folder and `.hvp` archives, the file tree, game / platform context |
+| `crates/textures` | texture decoders (`.dic`, `.dip`, `.hvt`, BC1/2/3, plain images) |
+| `crates/models` | `.zwo` reader (materials, meshes, instances; entities it does not need are skipped) |
+| `crates/xmc` | `.xmc` to XML, plus a small JSON reader |
+| `crates/lng` | `.lng` to text (Obscure 1, Obscure 2, Final Exam) |
+| `crates/swf` | `.swf` header and tag summary |
+| `crates/explorer` | the egui / eframe 0.29 application |
 
-1. Wii / PS2 / PSP / Xbox texture formats of Obscure 1 and 2.
-2. PS2/PSP (swizzle + palette), Wii (I8, IA8, RGB5A3, RGBA8, C4/C8, CMPR), Xbox (Morton), X360/PS3 (tiling/swizzle).
-3. Folder/selection export.
+## Credits and licenses
 
-## Credits
+- Archives: [obscure-hvp](https://github.com/YouKnow-sys/obscure-hvp) by YouKnow-sys.
+- Textures: the formats come from [ObsCure-Texture-Editor](https://github.com/HeitorSpectre/ObsCure-Texture-Editor)
+  by HeitorSpectre (MIT; with Evil Trainer and marcos_haf), and from
+  [obscure-texture-tool](https://github.com/Kapie77/obscure-texture-tool) by Kapie77 (GPL-3.0).
+- `.xmc`: port of [Obscure-XMC-Converter](https://github.com/Kapie77/Obscure-XMC-Converter) by Kapie77 (GPL-3.0-or-later).
+- `.lng`: port of the extraction code of [ObsCure-Text-Editor](https://github.com/HeitorSpectre/ObsCure-Text-Editor) by HeitorSpectre.
+- `.zwo`: file layout from [zwoBlender](https://github.com/Al-Hydra/zwoBlender) by Al-Hydra, checked against real game files.
+- Flash: [Ruffle](https://ruffle.rs). Video / audio conversion: [FFmpeg](https://ffmpeg.org).
 
-Texture formats come from the reverse-engineering work in [ObsCure-Texture-Editor](https://github.com/HeitorSpectre/ObsCure-Texture-Editor) (MIT; HeitorSpectre, Evil Trainer, marcos_haf).
-
-The `.lng` format comes from [ObsCure-Text-Editor](https://github.com/HeitorSpectre/ObsCure-Text-Editor) (MIT; HeitorSpectre, Evil Trainer, marcos_haf).
-
-The `.hvp` format comes from [obscure-hvp](https://github.com/YouKnow-sys/obscure-hvp) (MIT; YouKnow-sys).
-
-The `.zwo` format comes from [zwoBlender](https://github.com/Al-Hydra/zwoBlender) (Al-Hydra); check its license before redistributing.
+The project includes code ported from GPL-3.0 programs by its own author, so it is meant to be distributed under
+GPL-3.0-or-later. Check the licenses of the other sources listed above before redistributing builds.

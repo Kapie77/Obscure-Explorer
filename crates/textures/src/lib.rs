@@ -4,7 +4,12 @@ pub mod bc;
 pub mod dic;
 pub mod finalexam;
 pub mod formats;
+pub mod hvi;
 pub mod pixel;
+pub mod ps2;
+pub mod psp;
+pub mod wii;
+pub mod xbox;
 
 use obscure_core::Context;
 use std::fmt;
@@ -80,10 +85,10 @@ pub fn is_texture_ext(ext: &str) -> bool {
 
 /// Texture dictionaries holding several images (they behave like folders in the explorer).
 pub fn is_pack_ext(ext: &str) -> bool {
-    matches!(ext, "dic" | "dip")
+    matches!(ext, "dic" | "dip" | "xbr")
 }
 
 /// Files holding a single image: standard formats and the single-texture game formats.
 pub fn is_image_ext(ext: &str) -> bool {
-    matches!(ext, "bmp" | "tga" | "png" | "jpg" | "jpeg" | "hvt" | "hvi" | "xbr")
+    matches!(ext, "bmp" | "tga" | "png" | "jpg" | "jpeg" | "hvt" | "hvi")
 }
