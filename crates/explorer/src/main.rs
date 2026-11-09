@@ -660,25 +660,110 @@ fn file_name_of(path: &Path) -> String {
         .unwrap_or_else(|| "root".to_string())
 }
 
-/// Steam / GOG installs are recognised by their launcher files; retail is the fallback (set by hand).
-fn detect_pc_edition(entries: &[Entry]) -> Option<Platform> {
-    let (mut steam, mut gog) = (false, false);
-    for e in entries {
-        let name = base_name(&e.path).to_ascii_lowercase();
-        if name == "steam_api.dll" || name == "steam_api64.dll" || name == "steam_appid.txt" {
-            steam = true;
+/// Sony disc executables are named like `SLUS_123.45` (S, C or L, two letters, `_`, 3 digits, `.`, 2 digits).
+fn is_ps2_executable_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    b.len() == 11
+        && b[0] == b's'
+        && matches!(b[1], b'c' | b'l')
+        && b[2].is_ascii_lowercase()
+        && b[3].is_ascii_lowercase()
+        && b[4] == b'_'
+        && b[5..8].iter().all(u8::is_ascii_digit)
+        && b[8] == b'.'
+        && b[9..11].iter().all(u8::is_ascii_digit)
+}
+
+/// Guesses the platform of the opened game, in this order: the files of the console / PC launcher
+/// (disc folders, executables), the kind of files inside (.pmf and .at3 are PSP, .xbr is Xbox), and
+/// the layout of the first texture pack. None when nothing is conclusive (the selection is kept).
+fn detect_platform(archive: &dyn Archive, current: Platform) -> Option<Platform> {
+    let entries = archive.entries();
+    let (mut steam, mut gog, mut exe) = (false, false, false);
+    let (mut psp, mut ps3, mut ps2, mut wii, mut xbox, mut x360) = (false, false, false, false, false, false);
+    let (mut psp_hint, mut xbox_hint) = (false, false);
+    let mut first_dic: Option<usize> = None;
+    for (i, e) in entries.iter().enumerate() {
+        let lower = e.path.to_ascii_lowercase();
+        let name = base_name(&lower);
+        if lower.split('/').any(|c| c == "ps3_game") {
+            ps3 = true;
+        }
+        if lower.split('/').any(|c| c == "psp_game") {
+            psp = true;
+        }
+        match name {
+            "steam_api.dll" | "steam_api64.dll" | "steam_appid.txt" => steam = true,
+            "system.cnf" => ps2 = true,
+            "main.dol" | "apploader.img" => wii = true,
+            "default.xbe" => xbox = true,
+            "default.xex" => x360 = true,
+            "eboot.pbp" => psp = true,
+            _ => {}
         }
         if name.starts_with("goggame-") || name.starts_with("galaxy") {
             gog = true;
         }
+        if is_ps2_executable_name(name) {
+            ps2 = true;
+        }
+        match ext_of(name).as_str() {
+            "exe" => exe = true,
+            "pmf" | "at3" => psp_hint = true,
+            "xbr" => xbox_hint = true,
+            "dic" if first_dic.is_none() => first_dic = Some(i),
+            _ => {}
+        }
+    }
+    if ps3 {
+        return Some(Platform::Ps3);
+    }
+    if psp {
+        return Some(Platform::Psp);
+    }
+    if ps2 {
+        return Some(Platform::Ps2);
+    }
+    if wii {
+        return Some(Platform::Wii);
+    }
+    if x360 {
+        return Some(Platform::X360);
+    }
+    if xbox {
+        return Some(Platform::Xbox);
     }
     if steam {
-        Some(Platform::PcSteam)
-    } else if gog {
-        Some(Platform::PcGog)
-    } else {
-        None
+        return Some(Platform::PcSteam);
     }
+    if gog {
+        return Some(Platform::PcGog);
+    }
+    if psp_hint {
+        return Some(Platform::Psp);
+    }
+    if xbox_hint {
+        return Some(Platform::Xbox);
+    }
+    if exe {
+        return Some(if current.is_pc() { current } else { Platform::PcRetail });
+    }
+    // no marker: the first .dic tells which console wrote it (a PC .dic matches none of them)
+    if let Some(i) = first_dic {
+        if let Ok(data) = archive.read(i) {
+            if obscure_textures::psp::looks_like_psp_dic(&data) {
+                return Some(Platform::Psp);
+            }
+            if obscure_textures::wii::looks_like_wii_dic(&data) {
+                return Some(Platform::Wii);
+            }
+            if obscure_textures::ps2::looks_like_ps2_dic(&data) {
+                return Some(Platform::Ps2);
+            }
+            return Some(if current.is_pc() { current } else { Platform::PcSteam });
+        }
+    }
+    None
 }
 
 fn has_tree_children(node: &DirNode) -> bool {
@@ -887,8 +972,8 @@ impl App {
                 if let Some(g) = a.game() {
                     self.game_ctx.game = g;
                 }
-                if let Some(edition) = detect_pc_edition(a.entries()) {
-                    self.game_ctx.platform = edition;
+                if let Some(platform) = detect_platform(&a, self.game_ctx.platform) {
+                    self.game_ctx.platform = platform;
                 }
                 let mut status = format!(
                     "{} files ({} HVP archive(s) + loose files) in {}",
@@ -913,6 +998,9 @@ impl App {
         match HvpArchive::open(&path, &hashes_dir()) {
             Ok(a) => {
                 self.game_ctx.game = a.game();
+                if let Some(platform) = detect_platform(&a, self.game_ctx.platform) {
+                    self.game_ctx.platform = platform;
+                }
                 let mut status = format!("{} files in {}", a.entries().len(), path.display());
                 if let Some(w) = a.warning() {
                     status.push_str(" - ");
@@ -1629,7 +1717,7 @@ impl App {
         };
         let head: String = data.iter().take(16).map(|b| format!("{b:02x} ")).collect();
         // XWMA (Final Exam) cannot be decoded by rodio: it always goes through ffmpeg
-        let needs_ffmpeg = ext == "xwma";
+        let needs_ffmpeg = media::audio_needs_ffmpeg(&ext);
         if needs_ffmpeg && self.ffmpeg.is_none() {
             self.ffmpeg = find_ffmpeg();
         }
@@ -1764,8 +1852,9 @@ impl App {
                 return;
             }
         };
-        let file = self.temp.path_for(&format!("play_{index}.{ext}"));
-        if let Err(e) = std::fs::write(&file, &data) {
+        let (play_ext, payload) = media::video_payload(&ext, &data);
+        let file = self.temp.path_for(&format!("play_{index}.{play_ext}"));
+        if let Err(e) = std::fs::write(&file, payload) {
             self.status = format!("Temp file error: {e}");
             return;
         }
@@ -2419,7 +2508,7 @@ fn type_info(ext: &str) -> (&'static str, Color32) {
         "dic" | "dip" | "xbr" => ("Texture pack", Color32::from_rgb(120, 86, 200)),
         "hvt" | "hvi" => ("Texture", Color32::from_rgb(120, 86, 200)),
         "bmp" | "tga" | "png" | "jpg" | "jpeg" => ("Image", Color32::from_rgb(150, 90, 190)),
-        "wav" | "ogg" | "mp3" | "flac" | "xwma" => ("Audio", Color32::from_rgb(30, 150, 150)),
+        "wav" | "ogg" | "mp3" | "flac" | "xwma" | "at3" => ("Audio", Color32::from_rgb(30, 150, 150)),
         "bik" | "ogv" => ("Video", Color32::from_rgb(200, 70, 70)),
         "lng" => ("LNG (text)", Color32::from_rgb(60, 150, 90)),
         "srt" => ("SRT (subtitles)", Color32::from_rgb(60, 150, 90)),
@@ -4697,8 +4786,8 @@ impl App {
             .show(ctx, |ui| {
                 ui.set_max_width(460.0);
                 ui.label(
-                    "Videos (.bik and .ogv) and XWMA audio (.xwma) are decoded with ffmpeg, a free \
-                     and open-source tool that is not bundled with this program.",
+                    "Videos (.bik, .ogv and .pmf) and the audio of .xwma and .at3 files are decoded with \
+                     ffmpeg, a free and open-source tool that is not bundled with this program.",
                 );
                 ui.add_space(6.0);
                 if cfg!(windows) {

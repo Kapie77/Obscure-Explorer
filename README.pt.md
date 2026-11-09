@@ -11,8 +11,8 @@ English: [README.md](README.md)
 |------|----------|----------------|
 | Arquivos | `.hvp` (a pasta inteira do jogo, ou um arquivo só) | cada `.hvp` aparece como uma pasta; árvore e visão em blocos ou lista, como um explorador de arquivos |
 | Texturas | `.dic` (Obscure 2 PC), `.dip` (Obscure 1 PC), `.xbr` (Obscure 1 Xbox), `.dic` e `.hvt` (Obscure 2 Wii), `.dic` (PSP), `.dic` e `.hvi` (PS2), `.hvt` (Final Exam PC / PS3 / Xbox 360), `.bmp` `.tga` `.png` `.jpg` | miniaturas, visualizador em tela cheia, exportação em PNG. Os pacotes abrem como pastas |
-| Áudio | `.wav` `.mp3` `.ogg` `.flac`, `.xwma` (Final Exam) | barra de player com busca, volume, anterior / próximo. O `.xwma` precisa do ffmpeg |
-| Vídeo | `.bik` (Bink), `.ogv` | player em tela cheia com busca e anterior / próximo. Precisa do ffmpeg |
+| Áudio | `.wav` `.mp3` `.ogg` `.flac`, `.xwma` (Final Exam), `.at3` (PSP) | barra de player com busca, volume, anterior / próximo. `.xwma` e `.at3` precisam do ffmpeg |
+| Vídeo | `.bik` (Bink), `.ogv`, `.pmf` (PSP) | player em tela cheia com busca e anterior / próximo. Precisa do ffmpeg |
 | Modelos 3D | `.zwo` (Obscure 1 e 2) | visualizador 3D: texturizado / sólido / aramado, lista de malhas, status das texturas. Malhas com esqueleto aparecem na pose de repouso |
 | Texto | `.txt` `.ini` `.xml` `.csv` `.srt` `.lua` `.cre` `.sub` ... | janela de texto com busca (UTF-8, UTF-16 e Windows-1252). Lua compilado mostra suas strings |
 | Texto (convertido) | `.lng` (os três jogos) | texto legível; exporta como `.lng`, `.txt` ou os dois |
@@ -28,8 +28,9 @@ arquivos `.hoe`.
 1. Compile e rode: `cargo run -p obscure-explorer --release` (um Rust estável recente; o build release abre sem janela de terminal).
 2. **Open folder...** e escolha a pasta do jogo: todos os `.hvp` dentro dela são abertos (cada um aparece como uma pasta com o
    nome do arquivo) junto com os arquivos soltos (pasta `data`, `.exe`, ...). **Open HVP...** abre um arquivo só.
-3. O jogo é detectado sozinho. Escolha a **Platform** quando precisar: o PC tem as opções Steam, GOG e Retail (instalações
-   Steam e GOG são reconhecidas pelos arquivos do lançador).
+3. O jogo e a plataforma são detectados sozinhos (pastas de disco como `PSP_GAME`, executáveis como `default.xbe`,
+   `main.dol` ou `SLES_123.45`, arquivos do lançador Steam / GOG, arquivos `.pmf` / `.at3` / `.xbr`, ou o formato do primeiro `.dic`).
+   Troque a **Platform** à mão se ele errar: o PC tem as opções Steam, GOG e Retail.
 4. Obscure 2: copie a pasta `hashes` do [obscure-hvp](https://github.com/YouKnow-sys/obscure-hvp) para ao lado do programa,
    senão os nomes dos arquivos dentro dos `.hvp` saem errados.
 5. Clique nos itens para abrir e use o botão direito para exportar. Ctrl+clique, Shift+clique ou a caixinha do bloco
@@ -41,7 +42,7 @@ Se o programa travar, ele grava `obscure_explorer_crash.log` ao lado do executá
 
 Elas não vêm junto; cada pop-up oferece configurá-las na primeira vez que forem necessárias.
 
-- **ffmpeg** decodifica `.bik`, `.ogv` e `.xwma`. Windows: baixado automaticamente (build do gyan.dev). Linux: baixa um build
+- **ffmpeg** decodifica `.bik`, `.ogv`, `.pmf`, `.xwma` e `.at3`. Windows: baixado automaticamente (build do gyan.dev). Linux: baixa um build
   estático, ou o pop-up mostra o comando de instalação da sua distribuição. Também dá para apontar um ffmpeg que você já tenha.
 - **Ruffle** (emulador de Flash gratuito) toca os `.swf` numa janela própria. É baixado das releases dele no GitHub (Windows e
   Linux) ou localizado por você.

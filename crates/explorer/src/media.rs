@@ -15,9 +15,31 @@ use obscure_core::Archive;
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
-/// `xwma` (Final Exam) has no Rust decoder: it is decoded through ffmpeg.
-pub const AUDIO_EXTS: &[&str] = &["wav", "ogg", "mp3", "flac", "xwma"];
-pub const VIDEO_EXTS: &[&str] = &["bik", "ogv"];
+/// `xwma` (Final Exam) and `at3` (PSP, ATRAC3) have no Rust decoder: they are decoded through ffmpeg.
+pub const AUDIO_EXTS: &[&str] = &["wav", "ogg", "mp3", "flac", "xwma", "at3"];
+/// `pmf` is the PSP movie format (an MPEG program stream behind a PSMF header).
+pub const VIDEO_EXTS: &[&str] = &["bik", "ogv", "pmf"];
+
+/// Audio formats that always go through ffmpeg.
+pub fn audio_needs_ffmpeg(ext: &str) -> bool {
+    matches!(ext, "xwma" | "at3")
+}
+
+/// What ffmpeg should be given for a video file: the extension to use for the temporary file and the
+/// bytes. PSP movies start with a PSMF header in front of the MPEG program stream, which ffmpeg does
+/// not know: it is skipped by looking for the first pack start code (00 00 01 BA).
+pub fn video_payload<'a>(ext: &str, data: &'a [u8]) -> (String, &'a [u8]) {
+    if ext != "pmf" {
+        return (ext.to_string(), data);
+    }
+    if data.starts_with(b"PSMF") {
+        let scan = &data[..data.len().min(1024 * 1024)];
+        if let Some(pos) = scan.windows(4).position(|w| w == [0x00, 0x00, 0x01, 0xBA]) {
+            return ("mpg".to_string(), &data[pos..]);
+        }
+    }
+    ("mpg".to_string(), data)
+}
 
 pub fn is_audio_ext(ext: &str) -> bool {
     AUDIO_EXTS.contains(&ext)
@@ -430,13 +452,14 @@ impl VideoThumbs {
                 return None;
             }
         };
-        // the first frame only needs the beginning of the file
-        let head = &data[..data.len().min(8 * 1024 * 1024)];
         let ext = Path::new(&archive.entries()[index].path)
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("bin")
-            .to_string();
+            .to_ascii_lowercase();
+        let (ext, payload) = video_payload(&ext, &data);
+        // the first frame only needs the beginning of the file
+        let head = &payload[..payload.len().min(8 * 1024 * 1024)];
         let file = temp.path_for(&format!("thumb_{index}.{ext}"));
         if std::fs::write(&file, head).is_err() {
             self.ready.insert(index, None);
@@ -1136,5 +1159,33 @@ mod install_hint_tests {
         assert_eq!(install_command_for("manjaro", "arch"), Some("sudo pacman -S ffmpeg"));
         assert_eq!(install_command_for("nobara", "fedora"), Some("sudo dnf install ffmpeg-free"));
         assert_eq!(install_command_for("somethingnew", ""), None);
+    }
+}
+
+#[cfg(test)]
+mod psp_media_tests {
+    use super::*;
+
+    #[test]
+    fn pmf_header_is_skipped() {
+        let mut d = b"PSMF0012".to_vec();
+        d.resize(0x800, 0);
+        d.extend([0x00, 0x00, 0x01, 0xBA, 0x44]);
+        let (ext, payload) = video_payload("pmf", &d);
+        assert_eq!(ext, "mpg");
+        assert_eq!(&payload[..4], &[0x00, 0x00, 0x01, 0xBA]);
+        assert_eq!(payload.len(), 5);
+        let (ext, payload) = video_payload("bik", &d);
+        assert_eq!(ext, "bik");
+        assert_eq!(payload.len(), d.len());
+    }
+
+    #[test]
+    fn at3_and_xwma_use_ffmpeg() {
+        assert!(audio_needs_ffmpeg("at3"));
+        assert!(audio_needs_ffmpeg("xwma"));
+        assert!(!audio_needs_ffmpeg("wav"));
+        assert!(is_audio_ext("at3"));
+        assert!(is_video_ext("pmf"));
     }
 }
