@@ -16,7 +16,8 @@ use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
 /// `xwma` (Final Exam) and `at3` (PSP, ATRAC3) have no Rust decoder: they are decoded through ffmpeg.
-pub const AUDIO_EXTS: &[&str] = &["wav", "ogg", "mp3", "flac", "xwma", "at3"];
+/// `wsi` (Wii) is DSP-ADPCM in a small container, decoded by the program itself (see wsi.rs).
+pub const AUDIO_EXTS: &[&str] = &["wav", "ogg", "mp3", "flac", "xwma", "at3", "wsi"];
 /// `pmf` is the PSP movie format (an MPEG program stream behind a PSMF header).
 pub const VIDEO_EXTS: &[&str] = &["bik", "ogv", "pmf"];
 

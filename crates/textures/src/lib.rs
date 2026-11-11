@@ -90,5 +90,5 @@ pub fn is_pack_ext(ext: &str) -> bool {
 
 /// Files holding a single image: standard formats and the single-texture game formats.
 pub fn is_image_ext(ext: &str) -> bool {
-    matches!(ext, "bmp" | "tga" | "png" | "jpg" | "jpeg" | "hvt" | "hvi")
+    matches!(ext, "bmp" | "tga" | "png" | "jpg" | "jpeg" | "ico" | "hvt" | "hvi")
 }

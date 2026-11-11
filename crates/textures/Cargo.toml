@@ -6,4 +6,4 @@ license = "MIT"
 
 [dependencies]
 obscure-core = { path = "../core" }
-image = { version = "0.25", default-features = false, features = ["png", "bmp", "tga", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "bmp", "tga", "jpeg", "ico"] }

@@ -10,8 +10,8 @@ Português: [README.pt.md](README.pt.md)
 | Kind | Files | What you get |
 |------|-------|--------------|
 | Archives | `.hvp` (a whole game folder, or one archive) | every archive shows as a folder; the tree and the tile / list view work like a file explorer |
-| Textures | `.dic` (Obscure 2 PC), `.dip` (Obscure 1 PC), `.xbr` (Obscure 1 Xbox), `.dic` and `.hvt` (Obscure 2 Wii), `.dic` (PSP), `.dic` and `.hvi` (PS2), `.hvt` (Final Exam PC / PS3 / Xbox 360), `.bmp` `.tga` `.png` `.jpg` | thumbnails, full-window viewer, export as PNG. Packs open like folders |
-| Audio | `.wav` `.mp3` `.ogg` `.flac`, `.xwma` (Final Exam), `.at3` (PSP) | player bar with seek, volume, previous / next. `.xwma` and `.at3` need ffmpeg |
+| Textures | `.dic` (Obscure 2 PC), `.dip` (Obscure 1 PC), `.xbr` (Obscure 1 Xbox), `.dic` and `.hvt` (Obscure 2 Wii), `.dic` (PSP), `.dic` and `.hvi` (PS2), `.hvt` (Final Exam PC / PS3 / Xbox 360), `.bmp` `.tga` `.png` `.jpg` `.ico` | thumbnails, full-window viewer, export as PNG. Packs open like folders |
+| Audio | `.wav` `.mp3` `.ogg` `.flac`, `.xwma` (Final Exam), `.at3` (PSP), `.wsi` (Wii) | player bar with seek, volume, previous / next. `.xwma` and `.at3` need ffmpeg |
 | Video | `.bik` (Bink), `.ogv`, `.pmf` (PSP) | full-window player with seek and previous / next. Needs ffmpeg |
 | 3D models | `.zwo` (Obscure 1 and 2) | 3D viewer: textured / solid / wireframe, mesh list, texture status. Skinned meshes show their rest pose |
 | Text | `.txt` `.ini` `.xml` `.csv` `.srt` `.lua` `.cre` `.sub` ... | text window with search (UTF-8, UTF-16 and Windows-1252). Compiled Lua shows its strings |
@@ -33,7 +33,8 @@ Not supported yet: skeletons and animations of `.zwo`, PS2 `.zwo`,
    Change the **Platform** by hand if it guessed wrong: PC has Steam, GOG and Retail entries.
 4. Obscure 2: copy the `hashes` folder of [obscure-hvp](https://github.com/YouKnow-sys/obscure-hvp) next to the program,
    otherwise the file names inside the archives are wrong.
-5. Click things to open them. Right-click to export. Ctrl+click, Shift+click or the checkbox on a tile select several
+5. The **Open folder / Open HVP** dialogs and the **Export** dialog each remember their own folder (saved between runs).
+   Click things to open them. Right-click to export. Ctrl+click, Shift+click or the checkbox on a tile select several
    items; **Export...** writes the raw files (keeping the folder structure) and / or converted copies (PNG, XML, TXT).
 
 If something crashes, the program writes `obscure_explorer_crash.log` next to the executable.

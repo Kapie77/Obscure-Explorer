@@ -4,6 +4,7 @@
 mod media;
 mod model3d;
 mod ruffle;
+mod wsi;
 
 use eframe::egui;
 use egui::{pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke};
@@ -564,6 +565,9 @@ struct App {
     viewer: Option<Viewer>,
     text_view: Option<TextView>,
     model_viewer: Option<model3d::ModelViewer>,
+    /// Folder the "Open folder" / "Open HVP" dialogs start in, and the one of the export dialog (kept apart, and saved).
+    open_dir: Option<PathBuf>,
+    export_dir: Option<PathBuf>,
     swf_view: Option<SwfView>,
     /// Decoded texture packs used by the 3D viewer (a few are kept, they are slow to decode).
     tex_cache: HashMap<usize, Arc<Vec<(String, Arc<model3d::TexImage>)>>>,
@@ -628,6 +632,8 @@ impl Default for App {
             viewer: None,
             text_view: None,
             model_viewer: None,
+            open_dir: load_dirs().0,
+            export_dir: load_dirs().1,
             swf_view: None,
             tex_cache: HashMap::new(),
             ruffle: None,
@@ -1383,7 +1389,7 @@ impl App {
             let mut loose: HashMap<String, usize> = HashMap::new();
             for (i, e) in entries.iter().enumerate() {
                 let name = base_name(&e.path);
-                if !matches!(ext_of(name).as_str(), "bmp" | "tga" | "png" | "jpg" | "jpeg") {
+                if !matches!(ext_of(name).as_str(), "bmp" | "tga" | "png" | "jpg" | "jpeg" | "ico") {
                     continue;
                 }
                 let key = model3d::texture_key(name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name));
@@ -1723,10 +1729,13 @@ impl App {
         }
         let mut result: Result<AudioPlayer, String> = if needs_ffmpeg {
             Err("this format is decoded with ffmpeg".to_string())
+        } else if ext == "wsi" {
+            // Wii DSP-ADPCM, decoded by the program itself
+            wsi::decode_wsi(&data).and_then(|d| AudioPlayer::from_pcm(d.samples, d.channels, d.sample_rate))
         } else {
             AudioPlayer::from_file(data.clone())
         };
-        if result.is_err() {
+        if result.is_err() && ext != "wsi" {
             // last resort (or the only way for XWMA): let ffmpeg decode it
             if let Some(ff) = &self.ffmpeg {
                 let file = self.temp.path_for(&format!("audio_{index}.{ext}"));
@@ -2389,6 +2398,42 @@ fn export_one(
 
 // ---------------------------------------------------------------- utilities
 
+/// The folders the file dialogs start in are remembered between runs, one for opening games and
+/// one for exporting (they used to share the system's single "last folder").
+fn paths_file() -> PathBuf {
+    media::tools_dir().join("obscure_explorer_paths.txt")
+}
+
+fn load_dirs() -> (Option<PathBuf>, Option<PathBuf>) {
+    let text = std::fs::read_to_string(paths_file()).unwrap_or_default();
+    let (mut open, mut export) = (None, None);
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("open=") {
+            let p = PathBuf::from(v.trim());
+            if p.is_dir() {
+                open = Some(p);
+            }
+        } else if let Some(v) = line.strip_prefix("export=") {
+            let p = PathBuf::from(v.trim());
+            if p.is_dir() {
+                export = Some(p);
+            }
+        }
+    }
+    (open, export)
+}
+
+fn save_dirs(open: &Option<PathBuf>, export: &Option<PathBuf>) {
+    let mut text = String::new();
+    if let Some(p) = open {
+        text.push_str(&format!("open={}\n", p.display()));
+    }
+    if let Some(p) = export {
+        text.push_str(&format!("export={}\n", p.display()));
+    }
+    let _ = std::fs::write(paths_file(), text);
+}
+
 /// hashes.json (XMC names): next to the program or in the current folder, or where the user pointed to.
 fn find_hashes_json() -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
@@ -2507,8 +2552,8 @@ fn type_info(ext: &str) -> (&'static str, Color32) {
     match ext {
         "dic" | "dip" | "xbr" => ("Texture pack", Color32::from_rgb(120, 86, 200)),
         "hvt" | "hvi" => ("Texture", Color32::from_rgb(120, 86, 200)),
-        "bmp" | "tga" | "png" | "jpg" | "jpeg" => ("Image", Color32::from_rgb(150, 90, 190)),
-        "wav" | "ogg" | "mp3" | "flac" | "xwma" | "at3" => ("Audio", Color32::from_rgb(30, 150, 150)),
+        "bmp" | "tga" | "png" | "jpg" | "jpeg" | "ico" => ("Image", Color32::from_rgb(150, 90, 190)),
+        "wav" | "ogg" | "mp3" | "flac" | "xwma" | "at3" | "wsi" => ("Audio", Color32::from_rgb(30, 150, 150)),
         "bik" | "ogv" => ("Video", Color32::from_rgb(200, 70, 70)),
         "lng" => ("LNG (text)", Color32::from_rgb(60, 150, 90)),
         "srt" => ("SRT (subtitles)", Color32::from_rgb(60, 150, 90)),
@@ -3929,12 +3974,26 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Open folder...").clicked() {
-                    if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    let mut dlg = rfd::FileDialog::new().set_title("Open the game folder");
+                    if let Some(d) = &self.open_dir {
+                        dlg = dlg.set_directory(d);
+                    }
+                    if let Some(dir) = dlg.pick_folder() {
+                        self.open_dir = Some(dir.clone());
+                        save_dirs(&self.open_dir, &self.export_dir);
                         self.open(dir);
                     }
                 }
                 if ui.button("Open HVP...").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().add_filter("HVP", &["hvp"]).pick_file() {
+                    let mut dlg = rfd::FileDialog::new().set_title("Open an HVP archive").add_filter("HVP", &["hvp"]);
+                    if let Some(d) = &self.open_dir {
+                        dlg = dlg.set_directory(d);
+                    }
+                    if let Some(p) = dlg.pick_file() {
+                        if let Some(parent) = p.parent() {
+                            self.open_dir = Some(parent.to_path_buf());
+                            save_dirs(&self.open_dir, &self.export_dir);
+                        }
                         self.open_hvp(p);
                     }
                 }
@@ -4912,7 +4971,13 @@ impl App {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui.button("Choose folder...").clicked() {
-                            if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                            let mut dlg = rfd::FileDialog::new().set_title("Export to folder");
+                            if let Some(d) = &self.export_dir {
+                                dlg = dlg.set_directory(d);
+                            }
+                            if let Some(d) = dlg.pick_folder() {
+                                self.export_dir = Some(d.clone());
+                                save_dirs(&self.open_dir, &self.export_dir);
                                 ex.dest = Some(d);
                             }
                         }

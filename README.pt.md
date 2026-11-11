@@ -10,8 +10,8 @@ English: [README.md](README.md)
 | Tipo | Arquivos | O que você tem |
 |------|----------|----------------|
 | Arquivos | `.hvp` (a pasta inteira do jogo, ou um arquivo só) | cada `.hvp` aparece como uma pasta; árvore e visão em blocos ou lista, como um explorador de arquivos |
-| Texturas | `.dic` (Obscure 2 PC), `.dip` (Obscure 1 PC), `.xbr` (Obscure 1 Xbox), `.dic` e `.hvt` (Obscure 2 Wii), `.dic` (PSP), `.dic` e `.hvi` (PS2), `.hvt` (Final Exam PC / PS3 / Xbox 360), `.bmp` `.tga` `.png` `.jpg` | miniaturas, visualizador em tela cheia, exportação em PNG. Os pacotes abrem como pastas |
-| Áudio | `.wav` `.mp3` `.ogg` `.flac`, `.xwma` (Final Exam), `.at3` (PSP) | barra de player com busca, volume, anterior / próximo. `.xwma` e `.at3` precisam do ffmpeg |
+| Texturas | `.dic` (Obscure 2 PC), `.dip` (Obscure 1 PC), `.xbr` (Obscure 1 Xbox), `.dic` e `.hvt` (Obscure 2 Wii), `.dic` (PSP), `.dic` e `.hvi` (PS2), `.hvt` (Final Exam PC / PS3 / Xbox 360), `.bmp` `.tga` `.png` `.jpg` `.ico` | miniaturas, visualizador em tela cheia, exportação em PNG. Os pacotes abrem como pastas |
+| Áudio | `.wav` `.mp3` `.ogg` `.flac`, `.xwma` (Final Exam), `.at3` (PSP), `.wsi` (Wii) | barra de player com busca, volume, anterior / próximo. `.xwma` e `.at3` precisam do ffmpeg |
 | Vídeo | `.bik` (Bink), `.ogv`, `.pmf` (PSP) | player em tela cheia com busca e anterior / próximo. Precisa do ffmpeg |
 | Modelos 3D | `.zwo` (Obscure 1 e 2) | visualizador 3D: texturizado / sólido / aramado, lista de malhas, status das texturas. Malhas com esqueleto aparecem na pose de repouso |
 | Texto | `.txt` `.ini` `.xml` `.csv` `.srt` `.lua` `.cre` `.sub` ... | janela de texto com busca (UTF-8, UTF-16 e Windows-1252). Lua compilado mostra suas strings |
@@ -33,7 +33,8 @@ arquivos `.hoe`.
    Troque a **Platform** à mão se ele errar: o PC tem as opções Steam, GOG e Retail.
 4. Obscure 2: copie a pasta `hashes` do [obscure-hvp](https://github.com/YouKnow-sys/obscure-hvp) para ao lado do programa,
    senão os nomes dos arquivos dentro dos `.hvp` saem errados.
-5. Clique nos itens para abrir e use o botão direito para exportar. Ctrl+clique, Shift+clique ou a caixinha do bloco
+5. Os diálogos **Open folder / Open HVP** e o de **Export** lembram, cada um, a sua própria pasta (salva entre execuções).
+   Clique nos itens para abrir e use o botão direito para exportar. Ctrl+clique, Shift+clique ou a caixinha do bloco
    selecionam vários; **Export...** grava os arquivos originais (mantendo as pastas) e / ou cópias convertidas (PNG, XML, TXT).
 
 Se o programa travar, ele grava `obscure_explorer_crash.log` ao lado do executável.

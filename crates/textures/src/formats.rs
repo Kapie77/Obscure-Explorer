@@ -153,10 +153,10 @@ pub struct StdImage;
 
 impl TextureFormat for StdImage {
     fn name(&self) -> &'static str {
-        "BMP/TGA/PNG/JPEG image"
+        "BMP/TGA/PNG/JPEG/ICO image"
     }
     fn matches(&self, path: &str, _data: &[u8], _ctx: &Context) -> bool {
-        matches!(ext(path).as_str(), "bmp" | "tga" | "png" | "jpg" | "jpeg")
+        matches!(ext(path).as_str(), "bmp" | "tga" | "png" | "jpg" | "jpeg" | "ico")
     }
     fn decode(&self, path: &str, data: &[u8], _ctx: &Context) -> Result<Vec<Texture>, DecodeError> {
         let e = ext(path);
@@ -165,6 +165,7 @@ impl TextureFormat for StdImage {
             "tga" => image::ImageFormat::Tga,
             "png" => image::ImageFormat::Png,
             "jpg" | "jpeg" => image::ImageFormat::Jpeg,
+            "ico" => image::ImageFormat::Ico,
             other => return Err(DecodeError::Unsupported(format!("image extension '{other}'"))),
         };
         let img = image::load_from_memory_with_format(data, fmt)
@@ -188,3 +189,28 @@ impl TextureFormat for StdImage {
 
 pub static ALL: &[&dyn TextureFormat] =
     &[&WiiDic, &PspDic, &Ps2Dic, &PcDic, &PcDip, &HviTexture, &WiiHvt, &FinalExamHvt, &XboxXbr, &StdImage];
+
+#[cfg(test)]
+mod ico_tests {
+    use super::*;
+
+    #[test]
+    fn ico_with_a_png_inside() {
+        // a 2x1 PNG made with the image crate, wrapped in an ICO container
+        let mut png = Vec::new();
+        let img = image::RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let mut ico = vec![0, 0, 1, 0, 1, 0]; // reserved, type 1, one image
+        ico.extend([2, 1, 0, 0, 1, 0, 32, 0]); // width, height, colors, reserved, planes, bits
+        ico.extend((png.len() as u32).to_le_bytes());
+        ico.extend(22u32.to_le_bytes()); // offset of the image data
+        ico.extend(png);
+        let ctx = Context { game: Game::Obscure1, platform: Platform::PcSteam };
+        assert!(StdImage.matches("game.ico", &ico, &ctx));
+        let t = StdImage.decode("game.ico", &ico, &ctx).unwrap();
+        assert_eq!((t[0].width, t[0].height), (2, 1));
+        assert_eq!(t[0].rgba, [255, 0, 0, 255, 0, 255, 0, 255]);
+    }
+}
