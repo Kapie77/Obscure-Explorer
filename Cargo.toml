@@ -1,3 +1,11 @@
-[workspace]
-resolver = "2"
-members = ["crates/core", "crates/textures", "crates/models", "crates/xmc", "crates/lng", "crates/swf", "crates/explorer"]
+[package]
+name = "obscure-xmc-converter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+crc32fast = "1"
+serde_json = "1"
+xmltree = { version = "0.11", features = ["attribute-order"] }
