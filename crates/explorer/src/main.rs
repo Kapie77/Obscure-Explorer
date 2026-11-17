@@ -3,6 +3,7 @@
 
 mod media;
 mod model3d;
+mod psaudio;
 mod ruffle;
 mod wsi;
 
@@ -407,6 +408,8 @@ enum ExportKind {
     Xml,
     /// .lng converted to .txt
     Txt,
+    /// .wsi / .mib / .msb decoded to .wav
+    Wav,
 }
 
 /// Quick export buttons: the file as stored, converted, or both.
@@ -441,10 +444,12 @@ struct ExportDialog {
     tex_only: bool,
     has_xmc: bool,
     has_lng: bool,
+    has_wav: bool,
     raw: bool,
     png: bool,
     xml: bool,
     txt: bool,
+    wav: bool,
     dest: Option<PathBuf>,
     job: Option<ExportJob>,
     message: Option<String>,
@@ -875,6 +880,9 @@ fn convert_labels(ext: &str) -> Option<(&'static str, &'static str)> {
     match ext {
         "xmc" => Some((".xmc", ".xml")),
         "lng" => Some((".lng", ".txt")),
+        "wsi" => Some((".wsi", ".wav")),
+        "mib" => Some((".mib", ".wav")),
+        "msb" => Some((".msb", ".wav")),
         _ => None,
     }
 }
@@ -921,6 +929,43 @@ fn item_context_menu(
         let targets = export_targets_for(item, cwd, env);
         export_menu_entries(ui, &ext, targets, actions);
     });
+}
+
+/// Writes the decoded audio of a .wsi / .mib / .msb as .wav (a .msb gives one file per sound).
+fn export_wav(archive: &dyn Archive, index: usize, path: &str, dest: &Path) -> Result<(), String> {
+    let entries = archive.entries();
+    let data = archive.read(index).map_err(|e| format!("{path}: {e}"))?;
+    let base = dest.join(path).with_extension("");
+    if let Some(parent) = base.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{path}: {e}"))?;
+    }
+    let write = |name: String, samples: &[i16], channels: u16, rate: u32| -> Result<(), String> {
+        std::fs::write(&name, psaudio::wav_bytes(samples, channels, rate)).map_err(|e| format!("{path}: {e}"))
+    };
+    match ext_of(base_name(path)).as_str() {
+        "wsi" => {
+            let d = wsi::decode_wsi(&data).map_err(|e| format!("{path}: {e}"))?;
+            write(format!("{}.wav", base.display()), &d.samples, d.channels, d.sample_rate)
+        }
+        "mib" => {
+            let mih = find_sibling(entries, index, "mih")
+                .and_then(|i| archive.read(i).ok())
+                .and_then(|h| psaudio::parse_mih(&h));
+            let d = psaudio::decode_mib(&data, mih.as_ref()).map_err(|e| format!("{path}: {e}"))?;
+            write(format!("{}.wav", base.display()), &d.samples, d.channels, d.sample_rate)
+        }
+        "msb" => {
+            let msh = find_sibling(entries, index, "msh")
+                .and_then(|i| archive.read(i).ok())
+                .ok_or_else(|| format!("{path}: the .msh index with the same name was not found"))?;
+            let clips = psaudio::decode_bank_clips(&data, &msh).map_err(|e| format!("{path}: {e}"))?;
+            for (n, (samples, rate)) in clips.iter().enumerate() {
+                write(format!("{}_{n:03}.wav", base.display()), samples, 1, *rate)?;
+            }
+            Ok(())
+        }
+        other => Err(format!("{path}: .{other} cannot be exported as WAV")),
+    }
 }
 
 fn export_targets_for(item: &Item, cwd: &[String], env: &Env) -> Vec<ExpTarget> {
@@ -1130,6 +1175,8 @@ impl App {
             self.toggle_or_play_audio(index);
         } else if is_video_ext(&ext) {
             self.start_video(index, ctx, now);
+        } else if ext == "msh" || ext == "mih" {
+            self.open_audio_header(index, &ext);
         } else if ext == "ani" {
             let name = self
                 .archive
@@ -1427,6 +1474,21 @@ impl App {
             return;
         }
         self.model_viewer = Some(model3d::ModelViewer::new(file, scene, model.warnings.clone()));
+    }
+
+    /// Shows what a .msh (sound index) or .mih (stream header) says, as text.
+    fn open_audio_header(&mut self, index: usize, ext: &str) {
+        let Some(archive) = &self.archive else { return };
+        let name = base_name(&archive.entries()[index].path).to_string();
+        let data = match archive.read(index) {
+            Ok(d) => d,
+            Err(e) => {
+                self.status = format!("Read error: {e}");
+                return;
+            }
+        };
+        let text = if ext == "msh" { psaudio::msh_summary(&data) } else { psaudio::mih_summary(&data) };
+        self.text_view = Some(TextView::new(name, text, None, false, None));
     }
 
     /// Opens the summary window of a .swf file.
@@ -1732,10 +1794,26 @@ impl App {
         } else if ext == "wsi" {
             // Wii DSP-ADPCM, decoded by the program itself
             wsi::decode_wsi(&data).and_then(|d| AudioPlayer::from_pcm(d.samples, d.channels, d.sample_rate))
+        } else if ext == "mib" {
+            // PS2 PS-ADPCM; the .mih next to it (if any) gives the channels and the rate
+            let entries = archive.entries();
+            let mih = find_sibling(entries, index, "mih")
+                .and_then(|i| archive.read(i).ok())
+                .and_then(|h| psaudio::parse_mih(&h));
+            psaudio::decode_mib(&data, mih.as_ref())
+                .and_then(|d| AudioPlayer::from_pcm(d.samples, d.channels, d.sample_rate))
+        } else if ext == "msb" {
+            // PS2 sound bank: all the sounds one after the other, from the .msh index
+            let entries = archive.entries();
+            match find_sibling(entries, index, "msh").and_then(|i| archive.read(i).ok()) {
+                Some(msh) => psaudio::decode_bank_msb(&data, &msh)
+                    .and_then(|d| AudioPlayer::from_pcm(d.samples, d.channels, d.sample_rate)),
+                None => Err("a .msb sound bank needs the .msh index with the same name next to it".to_string()),
+            }
         } else {
             AudioPlayer::from_file(data.clone())
         };
-        if result.is_err() && ext != "wsi" {
+        if result.is_err() && !matches!(ext.as_str(), "wsi" | "mib" | "msb") {
             // last resort (or the only way for XWMA): let ffmpeg decode it
             if let Some(ff) = &self.ffmpeg {
                 let file = self.temp.path_for(&format!("audio_{index}.{ext}"));
@@ -1879,7 +1957,8 @@ impl App {
                 a.pause();
             }
         }
-        let player = VideoPlayer::start(&ff, file.clone(), info, ctx);
+        let fallback_audio = self.external_video_audio(index);
+        let player = VideoPlayer::start(&ff, file.clone(), info, ctx, fallback_audio);
         self.video = Some(VideoSession {
             name,
             file,
@@ -1890,6 +1969,22 @@ impl App {
             playlist,
             pos,
         });
+    }
+
+    /// PS2 `.pss` movies can come without sound: the audio is then a `.mib` stream with the same name.
+    fn external_video_audio(&self, index: usize) -> Option<Vec<i16>> {
+        let archive = self.archive.as_ref()?;
+        let entries = archive.entries();
+        if ext_of(base_name(&entries[index].path)) != "pss" {
+            return None;
+        }
+        let mib = find_by_stem(entries, index, "mib")?;
+        let data = archive.read(mib).ok()?;
+        let mih = find_sibling(entries, mib, "mih")
+            .and_then(|i| archive.read(i).ok())
+            .and_then(|h| psaudio::parse_mih(&h));
+        let d = psaudio::decode_mib(&data, mih.as_ref()).ok()?;
+        Some(psaudio::to_stereo_44100(&d.samples, d.channels, d.sample_rate))
     }
 
     fn step_video(&mut self, step: isize, ctx: &egui::Context, now: f64) {
@@ -1942,7 +2037,7 @@ impl App {
             return;
         }
         let entries = archive.entries();
-        let (mut n_files, mut has_tex, mut has_xmc, mut has_lng) = (0usize, false, false, false);
+        let (mut n_files, mut has_tex, mut has_xmc, mut has_lng, mut has_wav) = (0usize, false, false, false, false);
         let tex_only = targets.iter().all(|t| matches!(t, ExpTarget::Tex(..)));
         let is_tex = |i: usize| {
             let e = ext_of(base_name(&entries[i].path));
@@ -1950,6 +2045,7 @@ impl App {
         };
         let is_xmc = |i: usize| ext_of(base_name(&entries[i].path)) == "xmc";
         let is_lng = |i: usize| ext_of(base_name(&entries[i].path)) == "lng";
+        let is_wav = |i: usize| matches!(ext_of(base_name(&entries[i].path)).as_str(), "wsi" | "mib" | "msb");
         for t in &targets {
             match t {
                 ExpTarget::File(i) => {
@@ -1957,6 +2053,7 @@ impl App {
                     has_tex |= is_tex(*i);
                     has_xmc |= is_xmc(*i);
                     has_lng |= is_lng(*i);
+                    has_wav |= is_wav(*i);
                 }
                 ExpTarget::Tex(..) => has_tex = true,
                 ExpTarget::Folder(p) => {
@@ -1967,6 +2064,7 @@ impl App {
                             has_tex |= is_tex(i);
                             has_xmc |= is_xmc(i);
                             has_lng |= is_lng(i);
+                            has_wav |= is_wav(i);
                         }
                     }
                 }
@@ -1979,10 +2077,12 @@ impl App {
             tex_only,
             has_xmc,
             has_lng,
+            has_wav,
             raw: !tex_only,
             png: has_tex,
             xml: has_xmc,
             txt: has_lng,
+            wav: has_wav,
             dest: None,
             job: None,
             message: None,
@@ -1993,18 +2093,21 @@ impl App {
                 dialog.png = false;
                 dialog.xml = false;
                 dialog.txt = false;
+                dialog.wav = false;
             }
             Some(ExportPreset::Converted) => {
                 dialog.raw = false;
                 dialog.png = false;
                 dialog.xml = has_xmc;
                 dialog.txt = has_lng;
+                dialog.wav = has_wav;
             }
             Some(ExportPreset::Both) => {
                 dialog.raw = true;
                 dialog.png = false;
                 dialog.xml = has_xmc;
                 dialog.txt = has_lng;
+                dialog.wav = has_wav;
             }
             None => {}
         }
@@ -2017,7 +2120,7 @@ impl App {
         let Some(ex) = &mut self.export else { return };
         let Some(dest) = ex.dest.clone() else { return };
         let entries = archive.entries();
-        let (raw, png, xml, txt) = (ex.raw && !ex.tex_only, ex.png, ex.xml, ex.txt);
+        let (raw, png, xml, txt, wav) = (ex.raw && !ex.tex_only, ex.png, ex.xml, ex.txt, ex.wav);
         let mut items: Vec<ExportItem> = Vec::new();
         let mut seen: SeenSet = HashSet::new();
         for t in &ex.targets {
@@ -2025,13 +2128,13 @@ impl App {
                 ExpTarget::Tex(pack, i) => {
                     add_export_item(&mut items, &mut seen, *pack, Some(*i), ExportKind::Png)
                 }
-                ExpTarget::File(i) => add_file_items(entries, &mut items, &mut seen, *i, raw, png, xml, txt),
+                ExpTarget::File(i) => add_file_items(entries, &mut items, &mut seen, *i, raw, png, xml, txt, wav),
                 ExpTarget::Folder(p) => {
                     let prefix =
                         if p.is_empty() { String::new() } else { format!("{}/", p.join("/")) };
                     for (i, e) in entries.iter().enumerate() {
                         if e.path.starts_with(&prefix) {
-                            add_file_items(entries, &mut items, &mut seen, i, raw, png, xml, txt);
+                            add_file_items(entries, &mut items, &mut seen, i, raw, png, xml, txt, wav);
                         }
                     }
                 }
@@ -2292,6 +2395,7 @@ fn add_file_items(
     png: bool,
     xml: bool,
     txt: bool,
+    wav: bool,
 ) {
     if raw {
         add_export_item(items, seen, i, None, ExportKind::Raw);
@@ -2301,6 +2405,9 @@ fn add_file_items(
     }
     if txt && ext_of(base_name(&entries[i].path)) == "lng" {
         add_export_item(items, seen, i, None, ExportKind::Txt);
+    }
+    if wav && matches!(ext_of(base_name(&entries[i].path)).as_str(), "wsi" | "mib" | "msb") {
+        add_export_item(items, seen, i, None, ExportKind::Wav);
     }
     if png {
         let e = ext_of(base_name(&entries[i].path));
@@ -2338,6 +2445,7 @@ fn export_one(
             }
             std::fs::write(&out, data).map_err(|e| format!("{path}: {e}"))
         }
+        ExportKind::Wav => export_wav(archive, item.index, &path, dest),
         ExportKind::Txt => {
             let (_, txt) = obscure_lng::lng_to_txt(&data).map_err(|e| format!("{path}: {e}"))?;
             let out = dest.join(&path).with_extension("txt");
@@ -2502,6 +2610,37 @@ fn decode_pack_textures(
     }
 }
 
+/// The file in the same folder with the same name and another extension (a `.mib` and its `.mih`).
+fn find_sibling(entries: &[Entry], index: usize, ext: &str) -> Option<usize> {
+    let path = entries[index].path.as_str();
+    let (dir, file) = path.rsplit_once('/').unwrap_or(("", path));
+    let stem = file.rsplit_once('.').map(|(s, _)| s).unwrap_or(file);
+    entries.iter().position(|e| {
+        let (d, f) = e.path.rsplit_once('/').unwrap_or(("", e.path.as_str()));
+        match f.rsplit_once('.') {
+            Some((s, x)) => d.eq_ignore_ascii_case(dir) && s.eq_ignore_ascii_case(stem) && x.eq_ignore_ascii_case(ext),
+            None => false,
+        }
+    })
+}
+
+/// A file with the same name and the given extension anywhere in the archive (the same folder first).
+fn find_by_stem(entries: &[Entry], index: usize, ext: &str) -> Option<usize> {
+    if let Some(i) = find_sibling(entries, index, ext) {
+        return Some(i);
+    }
+    let path = entries[index].path.as_str();
+    let file = path.rsplit_once('/').map(|(_, f)| f).unwrap_or(path);
+    let stem = file.rsplit_once('.').map(|(s, _)| s).unwrap_or(file);
+    entries.iter().position(|e| {
+        let f = e.path.rsplit_once('/').map(|(_, f)| f).unwrap_or(e.path.as_str());
+        match f.rsplit_once('.') {
+            Some((s, x)) => s.eq_ignore_ascii_case(stem) && x.eq_ignore_ascii_case(ext),
+            None => false,
+        }
+    })
+}
+
 fn base_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
@@ -2553,8 +2692,10 @@ fn type_info(ext: &str) -> (&'static str, Color32) {
         "dic" | "dip" | "xbr" => ("Texture pack", Color32::from_rgb(120, 86, 200)),
         "hvt" | "hvi" => ("Texture", Color32::from_rgb(120, 86, 200)),
         "bmp" | "tga" | "png" | "jpg" | "jpeg" | "ico" => ("Image", Color32::from_rgb(150, 90, 190)),
-        "wav" | "ogg" | "mp3" | "flac" | "xwma" | "at3" | "wsi" => ("Audio", Color32::from_rgb(30, 150, 150)),
-        "bik" | "ogv" => ("Video", Color32::from_rgb(200, 70, 70)),
+        "wav" | "ogg" | "mp3" | "flac" | "xwma" | "at3" | "wsi" | "mib" | "msb" => ("Audio", Color32::from_rgb(30, 150, 150)),
+        "msh" => ("Sound index", Color32::from_rgb(30, 150, 150)),
+        "mih" => ("Audio header", Color32::from_rgb(30, 150, 150)),
+        "bik" | "ogv" | "pmf" | "pss" => ("Video", Color32::from_rgb(200, 70, 70)),
         "lng" => ("LNG (text)", Color32::from_rgb(60, 150, 90)),
         "srt" => ("SRT (subtitles)", Color32::from_rgb(60, 150, 90)),
         "lua" => ("Lua script", Color32::from_rgb(70, 110, 200)),
@@ -4845,8 +4986,8 @@ impl App {
             .show(ctx, |ui| {
                 ui.set_max_width(460.0);
                 ui.label(
-                    "Videos (.bik, .ogv and .pmf) and the audio of .xwma and .at3 files are decoded with \
-                     ffmpeg, a free and open-source tool that is not bundled with this program.",
+                    "Videos (.bik, .ogv, .pmf and .pss) and the audio of .xwma and .at3 files are decoded \
+                     with ffmpeg, a free and open-source tool that is not bundled with this program.",
                 );
                 ui.add_space(6.0);
                 if cfg!(windows) {
@@ -4968,6 +5109,10 @@ impl App {
                         ex.has_lng,
                         egui::Checkbox::new(&mut ex.txt, "LNG files as TXT (readable text, .txt)"),
                     );
+                    ui.add_enabled(
+                        ex.has_wav,
+                        egui::Checkbox::new(&mut ex.wav, "Console audio as WAV (.wsi, .mib, and every sound of a .msb)"),
+                    );
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui.button("Choose folder...").clicked() {
@@ -4992,7 +5137,8 @@ impl App {
                             && ((ex.raw && !ex.tex_only)
                                 || ex.png
                                 || (ex.xml && ex.has_xmc)
-                                || (ex.txt && ex.has_lng));
+                                || (ex.txt && ex.has_lng)
+                                || (ex.wav && ex.has_wav));
                         if ui.add_enabled(ready, egui::Button::new("Export")).clicked() {
                             start = true;
                         }

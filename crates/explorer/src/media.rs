@@ -17,9 +17,11 @@ use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
 /// `xwma` (Final Exam) and `at3` (PSP, ATRAC3) have no Rust decoder: they are decoded through ffmpeg.
 /// `wsi` (Wii) is DSP-ADPCM in a small container, decoded by the program itself (see wsi.rs).
-pub const AUDIO_EXTS: &[&str] = &["wav", "ogg", "mp3", "flac", "xwma", "at3", "wsi"];
+/// `mib` (PS2 streams) and `msb` (PS2 sound banks) are PS-ADPCM, decoded by the program (see psaudio.rs).
+pub const AUDIO_EXTS: &[&str] = &["wav", "ogg", "mp3", "flac", "xwma", "at3", "wsi", "mib", "msb"];
 /// `pmf` is the PSP movie format (an MPEG program stream behind a PSMF header).
-pub const VIDEO_EXTS: &[&str] = &["bik", "ogv", "pmf"];
+/// `pss` is the PS2 movie format (an MPEG program stream with PS2 audio); ffmpeg reads it directly.
+pub const VIDEO_EXTS: &[&str] = &["bik", "ogv", "pmf", "pss"];
 
 /// Audio formats that always go through ffmpeg.
 pub fn audio_needs_ffmpeg(ext: &str) -> bool {
@@ -802,7 +804,14 @@ pub struct VideoPlayer {
 }
 
 impl VideoPlayer {
-    pub fn start(ff: &Ffmpeg, file: PathBuf, info: VideoInfo, ctx: &egui::Context) -> Self {
+    /// `fallback_audio` (stereo, 44100 Hz) plays when the video file has no audio of its own.
+    pub fn start(
+        ff: &Ffmpeg,
+        file: PathBuf,
+        info: VideoInfo,
+        ctx: &egui::Context,
+        fallback_audio: Option<Vec<i16>>,
+    ) -> Self {
         let (frame_tx, frame_rx) = sync_channel::<Vec<u8>>(2);
         let (audio_tx, audio_rx) = channel::<Option<Vec<i16>>>();
         let stop = Arc::new(AtomicBool::new(false));
@@ -815,7 +824,7 @@ impl VideoPlayer {
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
             // audio first (decoded fully, kept in memory so seeking is instant)
-            let pcm = ff2.audio_pcm(&file2);
+            let pcm = ff2.audio_pcm(&file2).or(fallback_audio);
             let _ = audio_tx.send(pcm);
             ctx2.request_repaint();
             video_loop(ff2, file2, info, Duration::ZERO, s, p, f, c, frame_tx, ctx2);
