@@ -191,6 +191,68 @@ pub fn decode_bank_msb(msb: &[u8], msh: &[u8]) -> Result<Decoded, String> {
     Ok(bank_to_pcm(&decode_bank_clips(msb, msh)?))
 }
 
+/// The audio of a PS2 `.pss` movie. A PSS is an MPEG program stream; the sound is PS-ADPCM in the
+/// "private stream 1" packets (0xBD). Each packet starts with a 4-byte substream header (FF, id, 0, 0);
+/// the first one is followed by an `SShd` block (codec 0x10 = PS-ADPCM, sample rate, channels, interleave,
+/// all little-endian) and an `SSbd` header, then the audio. The video players that skip these packets
+/// show the movie without sound.
+pub fn pss_audio(data: &[u8]) -> Option<Decoded> {
+    let mut audio: Vec<u8> = Vec::new();
+    let mut header: Option<(u32, u32, u32)> = None; // sample rate, channels, interleave
+    let mut pos = 0usize;
+    while pos + 4 <= data.len() {
+        if data[pos] != 0 || data[pos + 1] != 0 || data[pos + 2] != 1 {
+            pos += 1;
+            continue;
+        }
+        let sid = data[pos + 3];
+        if sid == 0xBA {
+            // pack header: MPEG-2 (14 bytes + stuffing) or MPEG-1 (12 bytes)
+            pos += match data.get(pos + 4) {
+                Some(b) if b >> 6 == 1 => 14 + (data.get(pos + 13).copied().unwrap_or(0) & 7) as usize,
+                _ => 12,
+            };
+            continue;
+        }
+        if matches!(sid, 0xBB | 0xBD | 0xBE | 0xBF) || (0xC0..=0xEF).contains(&sid) {
+            let len = match data.get(pos + 4..pos + 6) {
+                Some(b) => u16::from_be_bytes([b[0], b[1]]) as usize,
+                None => break,
+            };
+            let end = (pos + 6 + len).min(data.len());
+            let body = &data[pos + 6..end];
+            if sid == 0xBD && body.len() > 3 {
+                let header_len = body[2] as usize;
+                if let Some(payload) = body.get(3 + header_len..) {
+                    if payload.len() > 4 && payload[0] == 0xFF {
+                        let mut d = &payload[4..];
+                        if d.starts_with(b"SShd") && d.len() >= 0x20 {
+                            if le32(d, 8) != Some(0x10) {
+                                return None; // not PS-ADPCM
+                            }
+                            header = Some((le32(d, 12)?, le32(d, 16)?, le32(d, 20)?));
+                            d = &d[0x20..];
+                        }
+                        if d.starts_with(b"SSbd") && d.len() >= 8 {
+                            d = &d[8..];
+                        }
+                        audio.extend_from_slice(d);
+                    }
+                }
+            }
+            pos += 6 + len;
+            continue;
+        }
+        pos += 1;
+    }
+    let (sample_rate, channels, interleave) = header?;
+    if audio.len() < 16 || !(1000..=192_000).contains(&sample_rate) || !(1..=2).contains(&channels) {
+        return None;
+    }
+    let mih = Mih { channels, sample_rate, interleave, chunks: 0 };
+    decode_mib(&audio, Some(&mih)).ok()
+}
+
 /// Interleaved 16-bit samples as stereo at 44100 Hz (what the video player expects).
 pub fn to_stereo_44100(samples: &[i16], channels: u16, rate: u32) -> Vec<i16> {
     let frames = samples.len() / channels.max(1) as usize;
@@ -334,6 +396,42 @@ mod tests {
         assert_eq!(st, [5, 5, 6, 6]);
         let st = to_stereo_44100(&[1, 2, 3, 4], 2, 44100);
         assert_eq!(st, [1, 2, 3, 4]);
+    }
+
+    /// A tiny PSS: a pack header, a video packet, and the stereo audio split over two private-stream packets.
+    #[test]
+    fn audio_inside_a_pss_movie() {
+        let mut pss = vec![0, 0, 1, 0xBA, 0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        // a video packet whose payload contains something that looks like a start code
+        pss.extend([0, 0, 1, 0xE0, 0, 8, 0, 0, 1, 0xBD, 9, 9, 9, 9]);
+        let packet = |payload: Vec<u8>| {
+            let mut body = vec![0x81, 0x00, 0x00];
+            body.extend(payload);
+            let mut p = vec![0, 0, 1, 0xBD];
+            p.extend((body.len() as u16).to_be_bytes());
+            p.extend(body);
+            p
+        };
+        let mut first = vec![0xFF, 0xA1, 0, 0];
+        first.extend(b"SShd");
+        for v in [0x18u32, 0x10, 22050, 2, 0x20, 0xFFFF_FFFF, 0xFFFF_FFFF] {
+            first.extend(v.to_le_bytes());
+        }
+        first.extend(b"SSbd");
+        first.extend(64u32.to_le_bytes());
+        first.extend(block(1, 0)); // left chunk (2 blocks)
+        first.extend(block(1, 0));
+        let mut second = vec![0xFF, 0xA0, 0, 0];
+        second.extend(block(3, 0)); // right chunk
+        second.extend(block(3, 0));
+        pss.extend(packet(first));
+        pss.extend(packet(second));
+        let d = pss_audio(&pss).unwrap();
+        assert_eq!((d.channels, d.sample_rate), (2, 22050));
+        assert_eq!(&d.samples[..4], &[1, 3, 0, 0]);
+        assert_eq!(d.samples.len(), 2 * 56);
+        // a movie without audio gives nothing
+        assert!(pss_audio(&[0, 0, 1, 0xBA, 0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0]).is_none());
     }
 
     #[test]

@@ -183,6 +183,8 @@ enum Action {
     ExportSelection,
     Export(Vec<ExpTarget>),
     ExportPreset(Vec<ExpTarget>, ExportPreset),
+    /// Show a file in its folder (used from search results).
+    GoTo(usize),
     Up,
 }
 
@@ -925,9 +927,20 @@ fn item_context_menu(
         Item::File { name, .. } => ext_of(name),
         _ => String::new(),
     };
+    let file_index = match item {
+        Item::File { index, .. } => Some(*index),
+        _ => None,
+    };
     resp.context_menu(|ui| {
         let targets = export_targets_for(item, cwd, env);
         export_menu_entries(ui, &ext, targets, actions);
+        if let Some(i) = file_index {
+            ui.separator();
+            if ui.button("Go to file location").clicked() {
+                actions.push(Action::GoTo(i));
+                ui.close_menu();
+            }
+        }
     });
 }
 
@@ -1491,6 +1504,25 @@ impl App {
         self.text_view = Some(TextView::new(name, text, None, false, None));
     }
 
+    /// Opens the folder of a file, selects it and scrolls to it (also expands it in the tree).
+    fn go_to_file(&mut self, index: usize) {
+        let Some(path) = self.archive.as_ref().map(|a| a.entries()[index].path.clone()) else { return };
+        let mut parts: Vec<String> = path.split('/').filter(|p| !p.is_empty()).map(String::from).collect();
+        parts.pop();
+        self.cd(parts);
+        self.recompute_results(); // the search is cleared: show the folder, not the old results
+        self.selection.clear();
+        let targets = self.view_targets();
+        if let Some(pos) = targets.iter().position(|t| matches!(t, Target::File(i) if *i == index)) {
+            let key = self.target_key(&Target::File(index));
+            self.selection.insert(key);
+            self.cursor = Some(pos);
+            self.sel_anchor = Some(pos);
+            self.scroll_cursor = true;
+            self.focus = Focus::Items;
+        }
+    }
+
     /// Opens the summary window of a .swf file.
     fn open_swf(&mut self, index: usize) {
         let Some(archive) = &self.archive else { return };
@@ -1957,7 +1989,7 @@ impl App {
                 a.pause();
             }
         }
-        let fallback_audio = self.external_video_audio(index);
+        let fallback_audio = self.external_video_audio(index, &data);
         let player = VideoPlayer::start(&ff, file.clone(), info, ctx, fallback_audio);
         self.video = Some(VideoSession {
             name,
@@ -1971,12 +2003,17 @@ impl App {
         });
     }
 
-    /// PS2 `.pss` movies can come without sound: the audio is then a `.mib` stream with the same name.
-    fn external_video_audio(&self, index: usize) -> Option<Vec<i16>> {
+    /// PS2 `.pss` movies: ffmpeg does not decode their audio, so it is read here (see psaudio::pss_audio);
+    /// failing that, a `.mib` stream with the same name is used.
+    fn external_video_audio(&self, index: usize, movie: &[u8]) -> Option<Vec<i16>> {
         let archive = self.archive.as_ref()?;
         let entries = archive.entries();
         if ext_of(base_name(&entries[index].path)) != "pss" {
             return None;
+        }
+        // the PS-ADPCM audio that PS2 movies carry in their private streams
+        if let Some(d) = psaudio::pss_audio(movie) {
+            return Some(psaudio::to_stereo_44100(&d.samples, d.channels, d.sample_rate));
         }
         let mib = find_by_stem(entries, index, "mib")?;
         let data = archive.read(mib).ok()?;
@@ -3431,6 +3468,13 @@ fn tree_ui(
                     }
                 } else {
                     export_menu_entries(ui, &ext, vec![t], actions);
+                    if let Some(f) = row.file {
+                        ui.separator();
+                        if ui.button("Go to file location").clicked() {
+                            actions.push(Action::GoTo(f));
+                            ui.close_menu();
+                        }
+                    }
                 }
             });
         }
@@ -3755,13 +3799,14 @@ fn viewer_ui(ctx: &egui::Context, v: &mut Viewer, pal: &Palette) -> (bool, isize
             let zs = 36.0;
             let margin = 22.0;
             let zy = rect.max.y - margin - zs;
-            let fit_rect = Rect::from_min_size(pos2(rect.min.x + margin, zy), vec2(zs, zs));
             let plus_rect = Rect::from_min_size(pos2(rect.max.x - margin - zs, zy), vec2(zs, zs));
             let pill_w = 74.0;
             let pill_rect =
                 Rect::from_min_size(pos2(plus_rect.min.x - 8.0 - pill_w, zy), vec2(pill_w, zs));
             let minus_rect =
                 Rect::from_min_size(pos2(pill_rect.min.x - 8.0 - zs, zy), vec2(zs, zs));
+            // the reset (fit to window) button sits next to the zoom-out button
+            let fit_rect = Rect::from_min_size(pos2(minus_rect.min.x - 8.0 - zs, zy), vec2(zs, zs));
             // the zoom level (100% = real size) sits between the two zoom buttons
             p.rect_filled(pill_rect, zs / 2.0, pal.tile);
             p.text(
@@ -4011,6 +4056,38 @@ impl eframe::App for App {
             apply_style(ctx, self.dark_mode);
         }
         let pal = palette(self.dark_mode);
+        // drag and drop: a game folder or an .hvp archive opens like with the buttons
+        let hovering = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        let dropped: Vec<PathBuf> =
+            ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+        if let Some(p) = dropped.into_iter().next() {
+            if p.is_dir() {
+                self.open_dir = Some(p.clone());
+                save_dirs(&self.open_dir, &self.export_dir);
+                self.open(p);
+            } else if p.extension().map(|e| e.eq_ignore_ascii_case("hvp")).unwrap_or(false) {
+                if let Some(parent) = p.parent() {
+                    self.open_dir = Some(parent.to_path_buf());
+                    save_dirs(&self.open_dir, &self.export_dir);
+                }
+                self.open_hvp(p);
+            } else {
+                self.status = "Drop a game folder or an .hvp archive to open it.".to_string();
+            }
+        }
+        if hovering {
+            let screen = ctx.screen_rect();
+            let painter =
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop_hint")));
+            painter.rect_filled(screen, 0.0, Color32::from_black_alpha(170));
+            painter.text(
+                screen.center(),
+                Align2::CENTER_CENTER,
+                "Drop a game folder or an .hvp archive to open it",
+                FontId::proportional(26.0),
+                Color32::WHITE,
+            );
+        }
         // the full-window overlays are always dark
         let overlay_pal = palette(true);
         let now = ctx.input(|i| i.time);
@@ -4948,6 +5025,7 @@ impl eframe::App for App {
                 }
                 Action::Export(targets) => self.begin_export(targets),
                 Action::ExportPreset(targets, preset) => self.begin_export_with(targets, Some(preset)),
+                Action::GoTo(index) => self.go_to_file(index),
                 Action::Up => {
                     if self.container.is_some() {
                         self.container = None;

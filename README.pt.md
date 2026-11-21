@@ -12,7 +12,7 @@ English: [README.md](README.md)
 | Arquivos | `.hvp` (a pasta inteira do jogo, ou um arquivo só) | cada `.hvp` aparece como uma pasta; árvore e visão em blocos ou lista, como um explorador de arquivos |
 | Texturas | `.dic` (Obscure 2 PC), `.dip` (Obscure 1 PC), `.xbr` (Obscure 1 Xbox), `.dic` e `.hvt` (Obscure 2 Wii), `.dic` (PSP), `.dic` e `.hvi` (PS2), `.hvt` (Final Exam PC / PS3 / Xbox 360), `.bmp` `.tga` `.png` `.jpg` `.ico` | miniaturas, visualizador em tela cheia, exportação em PNG. Os pacotes abrem como pastas |
 | Áudio | `.wav` `.mp3` `.ogg` `.flac`, `.xwma` (Final Exam), `.at3` (PSP), `.wsi` (Wii), `.mib` e `.msb` (PS2) | barra de player com busca, volume, anterior / próximo. `.xwma` e `.at3` precisam do ffmpeg; `.wsi`, `.mib` e `.msb` são decodificados pelo programa e podem ser exportados como `.wav`. `.mih` / `.msh` mostram o que o cabeçalho diz |
-| Vídeo | `.bik` (Bink), `.ogv`, `.pmf` (PSP), `.pss` (PS2) | player em tela cheia com busca e anterior / próximo. Precisa do ffmpeg |
+| Vídeo | `.bik` (Bink), `.ogv`, `.pmf` (PSP), `.pss` (PS2, com o áudio PS-ADPCM dele) | player em tela cheia com busca e anterior / próximo. Precisa do ffmpeg |
 | Modelos 3D | `.zwo` (Obscure 1 e 2) | visualizador 3D: texturizado / sólido / aramado, lista de malhas, status das texturas. Malhas com esqueleto aparecem na pose de repouso |
 | Texto | `.txt` `.ini` `.xml` `.csv` `.srt` `.lua` `.cre` `.sub` ... | janela de texto com busca (UTF-8, UTF-16 e Windows-1252). Lua compilado mostra suas strings |
 | Texto (convertido) | `.lng` (os três jogos) | texto legível; exporta como `.lng`, `.txt` ou os dois |
@@ -30,6 +30,7 @@ arquivos `.hoe`.
    nome do arquivo) junto com os arquivos soltos (pasta `data`, `.exe`, ...). **Open HVP...** abre um arquivo só.
 3. O jogo e a plataforma são detectados sozinhos (pastas de disco como `PSP_GAME`, executáveis como `default.xbe`,
    `main.dol` ou `SLES_123.45`, arquivos do lançador Steam / GOG, arquivos `.pmf` / `.at3` / `.xbr`, ou o formato do primeiro `.dic`).
+   Também dá para arrastar uma pasta de jogo ou um `.hvp` para a janela. Clique com o botão direito num arquivo e escolha **Go to file location** para ir à pasta dele (útil depois de uma busca).
    Troque a **Platform** à mão se ele errar: o PC tem as opções Steam, GOG e Retail.
 4. Obscure 2: copie a pasta `hashes` do [obscure-hvp](https://github.com/YouKnow-sys/obscure-hvp) para ao lado do programa,
    senão os nomes dos arquivos dentro dos `.hvp` saem errados.

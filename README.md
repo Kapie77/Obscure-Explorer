@@ -12,7 +12,7 @@ Português: [README.pt.md](README.pt.md)
 | Archives | `.hvp` (a whole game folder, or one archive) | every archive shows as a folder; the tree and the tile / list view work like a file explorer |
 | Textures | `.dic` (Obscure 2 PC), `.dip` (Obscure 1 PC), `.xbr` (Obscure 1 Xbox), `.dic` and `.hvt` (Obscure 2 Wii), `.dic` (PSP), `.dic` and `.hvi` (PS2), `.hvt` (Final Exam PC / PS3 / Xbox 360), `.bmp` `.tga` `.png` `.jpg` `.ico` | thumbnails, full-window viewer, export as PNG. Packs open like folders |
 | Audio | `.wav` `.mp3` `.ogg` `.flac`, `.xwma` (Final Exam), `.at3` (PSP), `.wsi` (Wii), `.mib` and `.msb` (PS2) | player bar with seek, volume, previous / next. `.xwma` and `.at3` need ffmpeg; `.wsi`, `.mib` and `.msb` are decoded by the program and can be exported as `.wav`. `.mih` / `.msh` show what the headers say |
-| Video | `.bik` (Bink), `.ogv`, `.pmf` (PSP), `.pss` (PS2) | full-window player with seek and previous / next. Needs ffmpeg |
+| Video | `.bik` (Bink), `.ogv`, `.pmf` (PSP), `.pss` (PS2, with its own PS-ADPCM audio) | full-window player with seek and previous / next. Needs ffmpeg |
 | 3D models | `.zwo` (Obscure 1 and 2) | 3D viewer: textured / solid / wireframe, mesh list, texture status. Skinned meshes show their rest pose |
 | Text | `.txt` `.ini` `.xml` `.csv` `.srt` `.lua` `.cre` `.sub` ... | text window with search (UTF-8, UTF-16 and Windows-1252). Compiled Lua shows its strings |
 | Text (converted) | `.lng` (all three games) | readable text; export as `.lng`, `.txt` or both |
@@ -30,6 +30,7 @@ Not supported yet: skeletons and animations of `.zwo`, PS2 `.zwo`,
    the file) together with the loose files (`data` folder, `.exe`, ...). **Open HVP...** opens a single archive.
 3. The game and the platform are detected automatically (disc folders such as `PSP_GAME`, executables like `default.xbe`,
    `main.dol` or `SLES_123.45`, Steam / GOG launcher files, `.pmf` / `.at3` / `.xbr` files, or the layout of the first `.dic`).
+   You can also drag a game folder or an `.hvp` onto the window to open it. Right-click a file and choose **Go to file location** to jump to its folder (handy after a search).
    Change the **Platform** by hand if it guessed wrong: PC has Steam, GOG and Retail entries.
 4. Obscure 2: copy the `hashes` folder of [obscure-hvp](https://github.com/YouKnow-sys/obscure-hvp) next to the program,
    otherwise the file names inside the archives are wrong.
