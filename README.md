@@ -11,12 +11,13 @@ Português: [README.pt.md](README.pt.md)
 |------|-------|--------------|
 | Archives | `.hvp` (a whole game folder, or one archive) | every archive shows as a folder; the tree and the tile / list view work like a file explorer |
 | Textures | `.dic` (Obscure 2 PC), `.dip` (Obscure 1 PC), `.xbr` (Obscure 1 Xbox), `.dic` and `.hvt` (Obscure 2 Wii), `.dic` (PSP), `.dic` and `.hvi` (PS2), `.hvt` (Final Exam PC / PS3 / Xbox 360), `.bmp` `.tga` `.png` `.jpg` `.ico` | thumbnails, full-window viewer, export as PNG. Packs open like folders |
-| Audio | `.wav` `.mp3` `.ogg` `.flac`, `.xwma` (Final Exam), `.at3` (PSP), `.wsi` (Wii), `.mib` and `.msb` (PS2) | player bar with seek, volume, previous / next. `.xwma` and `.at3` need ffmpeg; `.wsi`, `.mib` and `.msb` are decoded by the program and can be exported as `.wav`. `.mih` / `.msh` show what the headers say |
-| Video | `.bik` (Bink), `.ogv`, `.pmf` (PSP), `.pss` (PS2, with its own PS-ADPCM audio) | full-window player with seek and previous / next. Needs ffmpeg |
+| Audio | `.wav` `.mp3` `.ogg` `.flac`, `.xwma` (Final Exam), `.xma` (Final Exam Xbox 360), `.at3` (PSP), `.wsi` (Wii), `.mib` and `.msb` (PS2) | player bar with seek, volume, previous / next. `.xwma`, `.xma` and `.at3` need ffmpeg; `.wsi`, `.mib` and `.msb` are decoded by the program and can be exported as `.wav`. `.mih` / `.msh` show what the headers say |
+| Video | `.bik` (Bink), `.ogv`, `.wmv` (Final Exam), `.pmf` (PSP), `.pss` (PS2, with its own PS-ADPCM audio) | full-window player with seek and previous / next. Needs ffmpeg |
 | 3D models | `.zwo` (Obscure 1 and 2) | 3D viewer: textured / solid / wireframe, mesh list, texture status. Skinned meshes show their rest pose |
 | Text | `.txt` `.ini` `.xml` `.csv` `.srt` `.lua` `.cre` `.sub` ... | text window with search (UTF-8, UTF-16 and Windows-1252). Compiled Lua shows its strings |
 | Text (converted) | `.lng` (all three games) | readable text; export as `.lng`, `.txt` or both |
 | Text (converted) | `.xmc` (Obscure 2) | XML; export as `.xmc`, `.xml` or both |
+| PDF | `.pdf` | opens in the system's PDF viewer |
 | Flash | `.swf` (Final Exam) | summary window and "Play in Ruffle" |
 | Animation data | `.ani` (Final Exam), `*anim*.zwo` | orange **ANIM** tag; no preview yet |
 
@@ -44,7 +45,7 @@ If something crashes, the program writes `obscure_explorer_crash.log` next to th
 
 These are not bundled; each pop-up offers to set them up the first time they are needed.
 
-- **ffmpeg** decodes `.bik`, `.ogv`, `.pmf`, `.pss`, `.xwma` and `.at3`. Windows: downloaded automatically (gyan.dev build). Linux: a static build
+- **ffmpeg** decodes `.bik`, `.ogv`, `.wmv`, `.pmf`, `.xwma`, `.xma` and `.at3`. Windows: downloaded automatically (gyan.dev build). Linux: a static build
   is downloaded, or the pop-up shows the install command of your distribution. You can also point to an existing ffmpeg.
 - **Ruffle** (free Flash emulator) plays `.swf` files in its own window. Downloaded from its GitHub releases (Windows and
   Linux) or located by you.

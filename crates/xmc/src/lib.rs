@@ -102,17 +102,48 @@ struct Attr {
     value_offset: u32,
 }
 
-fn read_u32(data: &[u8], offset: usize) -> Result<u32, XmcError> {
+fn read_u32(data: &[u8], offset: usize, big: bool) -> Result<u32, XmcError> {
     match data.get(offset..offset + 4) {
-        Some(b) => Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+        Some(b) => {
+            let a = [b[0], b[1], b[2], b[3]];
+            Ok(if big { u32::from_be_bytes(a) } else { u32::from_le_bytes(a) })
+        }
         None => err("unexpected end of file reading u32"),
     }
 }
 
-fn read_i16(data: &[u8], offset: usize) -> Result<i16, XmcError> {
+fn read_i16(data: &[u8], offset: usize, big: bool) -> Result<i16, XmcError> {
     match data.get(offset..offset + 2) {
-        Some(b) => Ok(i16::from_le_bytes([b[0], b[1]])),
+        Some(b) => {
+            let a = [b[0], b[1]];
+            Ok(if big { i16::from_be_bytes(a) } else { i16::from_le_bytes(a) })
+        }
         None => err("unexpected end of file reading i16"),
+    }
+}
+
+/// Size the header promises, if the three counts are plausible in the given byte order.
+fn expected_size(data: &[u8], big: bool) -> Option<usize> {
+    let nodes = read_u32(data, 0, big).ok()? as usize;
+    let attrs = read_u32(data, 4, big).ok()? as usize;
+    let strings = read_u32(data, 8, big).ok()? as usize;
+    12usize
+        .checked_add(nodes.checked_mul(NODE_SIZE)?)?
+        .checked_add(attrs.checked_mul(ATTR_SIZE)?)?
+        .checked_add(strings)
+}
+
+/// PC files are little-endian; the console versions can be big-endian. The byte order whose header
+/// describes the file exactly (or, failing that, fits inside it) is used.
+fn detect_big_endian(data: &[u8]) -> bool {
+    let fits = |big: bool| expected_size(data, big).filter(|&e| e <= data.len());
+    match (fits(false), fits(true)) {
+        (Some(le), Some(be)) => {
+            // both fit: prefer the exact match, then little-endian
+            !(le == data.len() || be != data.len())
+        }
+        (None, Some(_)) => true,
+        _ => false,
     }
 }
 
@@ -120,9 +151,10 @@ fn parse_xmc(data: &[u8]) -> Result<(Vec<Node>, Vec<Attr>, Vec<u8>), XmcError> {
     if data.len() < 12 {
         return err("file is too small to contain an XMC header");
     }
-    let node_count = read_u32(data, 0)? as usize;
-    let attr_count = read_u32(data, 4)? as usize;
-    let string_size = read_u32(data, 8)? as usize;
+    let big = detect_big_endian(data);
+    let node_count = read_u32(data, 0, big)? as usize;
+    let attr_count = read_u32(data, 4, big)? as usize;
+    let string_size = read_u32(data, 8, big)? as usize;
     let node_bytes = node_count.checked_mul(NODE_SIZE).ok_or_else(|| XmcError("node count overflow".into()))?;
     let attr_bytes = attr_count.checked_mul(ATTR_SIZE).ok_or_else(|| XmcError("attribute count overflow".into()))?;
     let attr_start = 12usize.checked_add(node_bytes).ok_or_else(|| XmcError("file offset overflow".into()))?;
@@ -138,17 +170,17 @@ fn parse_xmc(data: &[u8]) -> Result<(Vec<Node>, Vec<Attr>, Vec<u8>), XmcError> {
     for i in 0..node_count {
         let o = 12 + i * NODE_SIZE;
         nodes.push(Node {
-            tag_crc: read_u32(data, o)?,
-            child_count: read_i16(data, o + 6)?,
-            first_child: read_i16(data, o + 8)?,
-            attr_count: read_i16(data, o + 10)?,
-            first_attr: read_i16(data, o + 12)?,
+            tag_crc: read_u32(data, o, big)?,
+            child_count: read_i16(data, o + 6, big)?,
+            first_child: read_i16(data, o + 8, big)?,
+            attr_count: read_i16(data, o + 10, big)?,
+            first_attr: read_i16(data, o + 12, big)?,
         });
     }
     let mut attrs = Vec::with_capacity(attr_count);
     for i in 0..attr_count {
         let o = attr_start + i * ATTR_SIZE;
-        attrs.push(Attr { name_crc: read_u32(data, o)?, value_offset: read_u32(data, o + 4)? });
+        attrs.push(Attr { name_crc: read_u32(data, o, big)?, value_offset: read_u32(data, o + 4, big)? });
     }
     Ok((nodes, attrs, data[strings_start..end].to_vec()))
 }
@@ -308,6 +340,41 @@ mod tests {
         let dict = load_dictionary_str("[\"a\", \"b\", \"k\"]");
         let xml = xmc_to_xml(&sample(), &dict).unwrap();
         assert_eq!(xml, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<a k=\"v\">\n  <b />\n</a>\n");
+    }
+
+    /// The same file with every number stored big-endian (console versions).
+    fn sample_big_endian() -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend(2u32.to_be_bytes());
+        d.extend(1u32.to_be_bytes());
+        d.extend(2u32.to_be_bytes());
+        d.extend(crc32("a").to_be_bytes());
+        d.extend((-1i16).to_be_bytes());
+        d.extend(1i16.to_be_bytes());
+        d.extend(1i16.to_be_bytes());
+        d.extend(1i16.to_be_bytes());
+        d.extend(0i16.to_be_bytes());
+        d.extend(0u16.to_be_bytes());
+        d.extend(crc32("b").to_be_bytes());
+        d.extend(0i16.to_be_bytes());
+        d.extend(0i16.to_be_bytes());
+        d.extend((-1i16).to_be_bytes());
+        d.extend(0i16.to_be_bytes());
+        d.extend((-1i16).to_be_bytes());
+        d.extend(0u16.to_be_bytes());
+        d.extend(crc32("k").to_be_bytes());
+        d.extend(0u32.to_be_bytes());
+        d.extend(b"v\0");
+        d
+    }
+
+    #[test]
+    fn big_endian_files_are_detected() {
+        let dict = load_dictionary_str("[\"a\", \"b\", \"k\"]");
+        let le = xmc_to_xml(&sample(), &dict).unwrap();
+        let be = xmc_to_xml(&sample_big_endian(), &dict).unwrap();
+        assert_eq!(le, be);
+        assert!(be.contains("<a k=\"v\">"));
     }
 
     #[test]

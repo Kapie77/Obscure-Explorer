@@ -1197,6 +1197,8 @@ impl App {
                 .map(|a| base_name(&a.entries()[index].path).to_string())
                 .unwrap_or_default();
             self.status = format!("'{name}' is animation data: there is no preview for it yet.");
+        } else if ext == "pdf" {
+            self.open_pdf(index);
         } else if ext == "swf" {
             self.open_swf(index);
         } else if ext == "lng" {
@@ -1521,6 +1523,28 @@ impl App {
             self.scroll_cursor = true;
             self.focus = Focus::Items;
         }
+    }
+
+    /// Writes a PDF to the temporary folder and opens it in the system's PDF viewer.
+    fn open_pdf(&mut self, index: usize) {
+        let Some(archive) = &self.archive else { return };
+        let name = base_name(&archive.entries()[index].path).to_string();
+        let data = match archive.read(index) {
+            Ok(d) => d,
+            Err(e) => {
+                self.status = format!("Read error: {e}");
+                return;
+            }
+        };
+        let file = self.temp.path_for(&format!("pdf_{index}_{name}"));
+        if let Err(e) = std::fs::write(&file, &data) {
+            self.status = format!("Cannot write the temporary file: {e}");
+            return;
+        }
+        self.status = match open_with_system(&file) {
+            Ok(()) => format!("'{name}' opened in your PDF viewer."),
+            Err(e) => format!("Could not open '{name}' in a PDF viewer: {e}"),
+        };
     }
 
     /// Opens the summary window of a .swf file.
@@ -2678,6 +2702,36 @@ fn find_by_stem(entries: &[Entry], index: usize, ext: &str) -> Option<usize> {
     })
 }
 
+/// Opens a file with the program the system associates with it (a PDF viewer for .pdf).
+fn open_with_system(path: &Path) -> std::io::Result<()> {
+    use std::process::{Command, Stdio};
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        Command::new("cmd")
+            .args(["/C", "start", ""])
+            .arg(path)
+            .creation_flags(0x0800_0000) // no console window
+            .stdin(Stdio::null())
+            .spawn()
+            .map(|_| ())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(path).stdin(Stdio::null()).spawn().map(|_| ())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+    }
+}
+
 fn base_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
@@ -2729,10 +2783,11 @@ fn type_info(ext: &str) -> (&'static str, Color32) {
         "dic" | "dip" | "xbr" => ("Texture pack", Color32::from_rgb(120, 86, 200)),
         "hvt" | "hvi" => ("Texture", Color32::from_rgb(120, 86, 200)),
         "bmp" | "tga" | "png" | "jpg" | "jpeg" | "ico" => ("Image", Color32::from_rgb(150, 90, 190)),
-        "wav" | "ogg" | "mp3" | "flac" | "xwma" | "at3" | "wsi" | "mib" | "msb" => ("Audio", Color32::from_rgb(30, 150, 150)),
+        "wav" | "ogg" | "mp3" | "flac" | "xwma" | "xma" | "at3" | "wsi" | "mib" | "msb" => ("Audio", Color32::from_rgb(30, 150, 150)),
         "msh" => ("Sound index", Color32::from_rgb(30, 150, 150)),
         "mih" => ("Audio header", Color32::from_rgb(30, 150, 150)),
-        "bik" | "ogv" | "pmf" | "pss" => ("Video", Color32::from_rgb(200, 70, 70)),
+        "bik" | "ogv" | "pmf" | "pss" | "wmv" => ("Video", Color32::from_rgb(200, 70, 70)),
+        "pdf" => ("PDF document", Color32::from_rgb(200, 60, 60)),
         "lng" => ("LNG (text)", Color32::from_rgb(60, 150, 90)),
         "srt" => ("SRT (subtitles)", Color32::from_rgb(60, 150, 90)),
         "lua" => ("Lua script", Color32::from_rgb(70, 110, 200)),
@@ -5064,8 +5119,8 @@ impl App {
             .show(ctx, |ui| {
                 ui.set_max_width(460.0);
                 ui.label(
-                    "Videos (.bik, .ogv, .pmf and .pss) and the audio of .xwma and .at3 files are decoded \
-                     with ffmpeg, a free and open-source tool that is not bundled with this program.",
+                    "Videos (.bik, .ogv, .pmf, .wmv and .pss) and the audio of .xwma, .xma and .at3 files are \
+                     decoded with ffmpeg, a free and open-source tool that is not bundled with this program.",
                 );
                 ui.add_space(6.0);
                 if cfg!(windows) {

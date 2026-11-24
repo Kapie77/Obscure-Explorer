@@ -15,17 +15,17 @@ use obscure_core::Archive;
 use rodio::buffer::SamplesBuffer;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 
-/// `xwma` (Final Exam) and `at3` (PSP, ATRAC3) have no Rust decoder: they are decoded through ffmpeg.
+/// `xwma` and `xma` (Final Exam, Xbox 360) and `at3` (PSP, ATRAC3) have no Rust decoder: they are decoded through ffmpeg.
 /// `wsi` (Wii) is DSP-ADPCM in a small container, decoded by the program itself (see wsi.rs).
 /// `mib` (PS2 streams) and `msb` (PS2 sound banks) are PS-ADPCM, decoded by the program (see psaudio.rs).
-pub const AUDIO_EXTS: &[&str] = &["wav", "ogg", "mp3", "flac", "xwma", "at3", "wsi", "mib", "msb"];
+pub const AUDIO_EXTS: &[&str] = &["wav", "ogg", "mp3", "flac", "xwma", "xma", "at3", "wsi", "mib", "msb"];
 /// `pmf` is the PSP movie format (an MPEG program stream behind a PSMF header).
 /// `pss` is the PS2 movie format (an MPEG program stream with PS2 audio); ffmpeg reads it directly.
-pub const VIDEO_EXTS: &[&str] = &["bik", "ogv", "pmf", "pss"];
+pub const VIDEO_EXTS: &[&str] = &["bik", "ogv", "pmf", "pss", "wmv"];
 
 /// Audio formats that always go through ffmpeg.
 pub fn audio_needs_ffmpeg(ext: &str) -> bool {
-    matches!(ext, "xwma" | "at3")
+    matches!(ext, "xwma" | "xma" | "at3")
 }
 
 /// What ffmpeg should be given for a video file: the extension to use for the temporary file and the
