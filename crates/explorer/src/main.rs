@@ -945,7 +945,7 @@ fn item_context_menu(
 }
 
 /// Writes the decoded audio of a .wsi / .mib / .msb as .wav (a .msb gives one file per sound).
-fn export_wav(archive: &dyn Archive, index: usize, path: &str, dest: &Path) -> Result<(), String> {
+fn export_wav(archive: &dyn Archive, index: usize, path: &str, dest: &Path, default_rate: u32) -> Result<(), String> {
     let entries = archive.entries();
     let data = archive.read(index).map_err(|e| format!("{path}: {e}"))?;
     let base = dest.join(path).with_extension("");
@@ -964,14 +964,16 @@ fn export_wav(archive: &dyn Archive, index: usize, path: &str, dest: &Path) -> R
             let mih = find_sibling(entries, index, "mih")
                 .and_then(|i| archive.read(i).ok())
                 .and_then(|h| psaudio::parse_mih(&h));
-            let d = psaudio::decode_mib(&data, mih.as_ref()).map_err(|e| format!("{path}: {e}"))?;
+            let d = psaudio::decode_mib(&data, mih.as_ref(), default_rate).map_err(|e| format!("{path}: {e}"))?;
             write(format!("{}.wav", base.display()), &d.samples, d.channels, d.sample_rate)
         }
         "msb" => {
-            let msh = find_sibling(entries, index, "msh")
-                .and_then(|i| archive.read(i).ok())
-                .ok_or_else(|| format!("{path}: the .msh index with the same name was not found"))?;
-            let clips = psaudio::decode_bank_clips(&data, &msh).map_err(|e| format!("{path}: {e}"))?;
+            let clips = match find_sibling(entries, index, "msh").and_then(|i| archive.read(i).ok()) {
+                Some(msh) => psaudio::decode_bank_clips(&data, &msh),
+                // Obscure 1 banks have no index: the sounds are told apart by their end markers
+                None => psaudio::decode_bank_without_index(&data, 22050),
+            }
+            .map_err(|e| format!("{path}: {e}"))?;
             for (n, (samples, rate)) in clips.iter().enumerate() {
                 write(format!("{}_{n:03}.wav", base.display()), samples, 1, *rate)?;
             }
@@ -1187,7 +1189,17 @@ impl App {
         } else if is_audio_ext(&ext) {
             self.toggle_or_play_audio(index);
         } else if is_video_ext(&ext) {
-            self.start_video(index, ctx, now);
+            if ext == "pss" && self.pss_is_audio_only(index) {
+                let name = self
+                    .archive
+                    .as_ref()
+                    .map(|a| base_name(&a.entries()[index].path).to_string())
+                    .unwrap_or_default();
+                self.status = format!("'{name}' has no video (the game draws its cutscene itself): playing its audio.");
+                self.toggle_or_play_audio(index);
+            } else {
+                self.start_video(index, ctx, now);
+            }
         } else if ext == "msh" || ext == "mih" {
             self.open_audio_header(index, &ext);
         } else if ext == "ani" {
@@ -1783,6 +1795,15 @@ impl App {
 
     // ------------------------------------------------------------ audio player
 
+    /// A `.pss` with audio but no MPEG video (the PS2 cutscenes of Obscure 1).
+    fn pss_is_audio_only(&self, index: usize) -> bool {
+        let Some(archive) = self.archive.as_ref() else { return false };
+        match archive.read(index) {
+            Ok(data) => !psaudio::pss_has_video(&data) && psaudio::pss_audio(&data).is_some(),
+            Err(_) => false,
+        }
+    }
+
     fn toggle_or_play_audio(&mut self, index: usize) {
         let loaded_ok = self
             .player
@@ -1856,7 +1877,7 @@ impl App {
             let mih = find_sibling(entries, index, "mih")
                 .and_then(|i| archive.read(i).ok())
                 .and_then(|h| psaudio::parse_mih(&h));
-            psaudio::decode_mib(&data, mih.as_ref())
+            psaudio::decode_mib(&data, mih.as_ref(), mib_default_rate(self.game_ctx.game))
                 .and_then(|d| AudioPlayer::from_pcm(d.samples, d.channels, d.sample_rate))
         } else if ext == "msb" {
             // PS2 sound bank: all the sounds one after the other, from the .msh index
@@ -1864,7 +1885,16 @@ impl App {
             match find_sibling(entries, index, "msh").and_then(|i| archive.read(i).ok()) {
                 Some(msh) => psaudio::decode_bank_msb(&data, &msh)
                     .and_then(|d| AudioPlayer::from_pcm(d.samples, d.channels, d.sample_rate)),
-                None => Err("a .msb sound bank needs the .msh index with the same name next to it".to_string()),
+                // no index (Obscure 1): the sounds are told apart by their end markers
+                None => psaudio::decode_bank_without_index(&data, 22050)
+                    .map(|clips| psaudio::bank_to_pcm(&clips))
+                    .and_then(|d| AudioPlayer::from_pcm(d.samples, d.channels, d.sample_rate)),
+            }
+        } else if ext == "pss" {
+            // a movie without video (Obscure 1, PS2): only its sound can be played
+            match psaudio::pss_audio(&data) {
+                Some(d) => AudioPlayer::from_pcm(d.samples, d.channels, d.sample_rate),
+                None => Err("no playable audio in this .pss".to_string()),
             }
         } else {
             AudioPlayer::from_file(data.clone())
@@ -2044,7 +2074,7 @@ impl App {
         let mih = find_sibling(entries, mib, "mih")
             .and_then(|i| archive.read(i).ok())
             .and_then(|h| psaudio::parse_mih(&h));
-        let d = psaudio::decode_mib(&data, mih.as_ref()).ok()?;
+        let d = psaudio::decode_mib(&data, mih.as_ref(), mib_default_rate(self.game_ctx.game)).ok()?;
         Some(psaudio::to_stereo_44100(&d.samples, d.channels, d.sample_rate))
     }
 
@@ -2506,7 +2536,7 @@ fn export_one(
             }
             std::fs::write(&out, data).map_err(|e| format!("{path}: {e}"))
         }
-        ExportKind::Wav => export_wav(archive, item.index, &path, dest),
+        ExportKind::Wav => export_wav(archive, item.index, &path, dest, mib_default_rate(gctx.game)),
         ExportKind::Txt => {
             let (_, txt) = obscure_lng::lng_to_txt(&data).map_err(|e| format!("{path}: {e}"))?;
             let out = dest.join(&path).with_extension("txt");
@@ -2672,6 +2702,16 @@ fn decode_pack_textures(
 }
 
 /// The file in the same folder with the same name and another extension (a `.mib` and its `.mih`).
+/// Sample rate guessed for a `.mib` without a `.mih`: the voices of the Obscure 1 PS2 files are an octave too
+/// high at 44100 Hz, so they use 22050 Hz.
+fn mib_default_rate(game: Game) -> u32 {
+    if game == Game::Obscure1 {
+        22050
+    } else {
+        44100
+    }
+}
+
 fn find_sibling(entries: &[Entry], index: usize, ext: &str) -> Option<usize> {
     let path = entries[index].path.as_str();
     let (dir, file) = path.rsplit_once('/').unwrap_or(("", path));

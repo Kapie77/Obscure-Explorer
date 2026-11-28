@@ -4,7 +4,9 @@
 //!
 //! * `.mih` (little-endian): header size (0x40), ?, channels at 0x08, sample rate at 0x0C, interleave
 //!   (size in bytes of each channel's chunk) at 0x10, number of chunks at 0x14.
-//!   Without a `.mih` a `.mib` is mono at 44100 Hz (checked against the Wii version of the same voice line).
+//!   Without a `.mih` a `.mib` is mono; the sample rate is then a guess: 44100 Hz for Obscure 2 (checked
+//!   against the Wii version of the same voice line), 22050 Hz for Obscure 1 (the voices of the PS2 version
+//!   come out an octave too high at 44100 Hz).
 //! * `.msh` (little-endian): file size, ?, sound count at 0x08, then 16-byte entries: size, 0, offset into
 //!   the `.msb`, sample rate. The `.msb` is the sounds one after the other, each its own mono PS-ADPCM stream.
 
@@ -79,10 +81,10 @@ pub fn mih_summary(data: &[u8]) -> String {
 }
 
 /// A `.mib` stream; `mih` gives the channels, the rate and the interleave when it is known.
-pub fn decode_mib(data: &[u8], mih: Option<&Mih>) -> Result<Decoded, String> {
+pub fn decode_mib(data: &[u8], mih: Option<&Mih>, default_rate: u32) -> Result<Decoded, String> {
     let (channels, sample_rate, interleave) = match mih {
         Some(m) => (m.channels, m.sample_rate, m.interleave as usize),
-        None => (1, 44100, 0),
+        None => (1, default_rate, 0),
     };
     if data.len() < 16 {
         return Err("the .mib file is too small".into());
@@ -147,6 +149,40 @@ pub fn msh_summary(data: &[u8]) -> String {
     }
 }
 
+/// The sounds of a bank that has no `.msh` index (Obscure 1): each sound ends with a block whose flag
+/// byte has the "end" bit (1, or 3 for a loop end), usually followed by a lone "7" block that only
+/// terminates it. Returns the PS-ADPCM bytes of every sound.
+pub fn split_sounds(data: &[u8]) -> Vec<&[u8]> {
+    let frames = data.len() / 16;
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for i in 0..frames {
+        let flag = data[i * 16 + 1];
+        if flag & 1 != 0 {
+            if flag == 7 && i == start {
+                start = i + 1; // the terminator block after an end block
+                continue;
+            }
+            out.push(&data[start * 16..(i + 1) * 16]);
+            start = i + 1;
+        }
+    }
+    if frames > start + 1 {
+        out.push(&data[start * 16..frames * 16]);
+    }
+    out.retain(|c| c.len() >= 32);
+    out
+}
+
+/// Sounds of an index-less bank, decoded (the sample rate is a guess, 22050 Hz like the other banks).
+pub fn decode_bank_without_index(msb: &[u8], rate: u32) -> Result<Vec<(Vec<i16>, u32)>, String> {
+    let clips: Vec<(Vec<i16>, u32)> = split_sounds(msb).into_iter().map(|c| (ps_adpcm_decode(c), rate)).collect();
+    if clips.is_empty() {
+        return Err("no sounds found in the .msb (it has no .msh index and no end markers)".into());
+    }
+    Ok(clips)
+}
+
 /// Every sound of a bank: (samples, sample rate).
 pub fn decode_bank_clips(msb: &[u8], msh: &[u8]) -> Result<Vec<(Vec<i16>, u32)>, String> {
     let entries = parse_msh(msh)?;
@@ -189,6 +225,37 @@ pub fn bank_to_pcm(clips: &[(Vec<i16>, u32)]) -> Decoded {
 
 pub fn decode_bank_msb(msb: &[u8], msh: &[u8]) -> Result<Decoded, String> {
     Ok(bank_to_pcm(&decode_bank_clips(msb, msh)?))
+}
+
+/// Whether a `.pss` has an MPEG video stream (0xE0..0xEF). The cutscenes of the PS2 version of Obscure 1
+/// do not: the game draws them itself and the file only carries the sound plus animation data.
+pub fn pss_has_video(data: &[u8]) -> bool {
+    let mut pos = 0usize;
+    while pos + 6 <= data.len() {
+        if data[pos] != 0 || data[pos + 1] != 0 || data[pos + 2] != 1 {
+            match data[pos..].windows(3).position(|w| w == [0, 0, 1]) {
+                Some(p) => pos += p,
+                None => return false,
+            }
+            continue;
+        }
+        let sid = data[pos + 3];
+        if (0xE0..=0xEF).contains(&sid) {
+            return true;
+        }
+        if sid == 0xBA {
+            pos += match data.get(pos + 4) {
+                Some(b) if b >> 6 == 1 => 14 + (data.get(pos + 13).copied().unwrap_or(0) & 7) as usize,
+                _ => 12,
+            };
+        } else if sid >= 0xBB {
+            let len = u16::from_be_bytes([data[pos + 4], data[pos + 5]]) as usize;
+            pos += 6 + len;
+        } else {
+            pos += 4;
+        }
+    }
+    false
 }
 
 /// The audio of a PS2 `.pss` movie. A PSS is an MPEG program stream; the sound is PS-ADPCM in the
@@ -250,7 +317,7 @@ pub fn pss_audio(data: &[u8]) -> Option<Decoded> {
         return None;
     }
     let mih = Mih { channels, sample_rate, interleave, chunks: 0 };
-    decode_mib(&audio, Some(&mih)).ok()
+    decode_mib(&audio, Some(&mih), 44100).ok()
 }
 
 /// Interleaved 16-bit samples as stereo at 44100 Hz (what the video player expects).
@@ -347,7 +414,7 @@ mod tests {
         data.extend(block(3, 0));
         data.extend(block(3, 0));
         let mih = Mih { channels: 2, sample_rate: 22050, interleave: 32, chunks: 1 };
-        let d = decode_mib(&data, Some(&mih)).unwrap();
+        let d = decode_mib(&data, Some(&mih), 44100).unwrap();
         assert_eq!((d.channels, d.sample_rate), (2, 22050));
         assert_eq!(&d.samples[..4], &[1, 3, 0, 0]);
         assert_eq!(d.samples.len(), 2 * 56);
@@ -355,8 +422,10 @@ mod tests {
 
     #[test]
     fn mib_without_mih_is_mono_44100() {
-        let d = decode_mib(&block(1, 2), None).unwrap();
+        let d = decode_mib(&block(1, 2), None, 44100).unwrap();
         assert_eq!((d.channels, d.sample_rate, d.samples.len()), (1, 44100, 28));
+        let d = decode_mib(&block(1, 2), None, 22050).unwrap();
+        assert_eq!(d.sample_rate, 22050);
     }
 
     fn msh(entries: &[(u32, u32, u32)]) -> Vec<u8> {
@@ -432,6 +501,42 @@ mod tests {
         assert_eq!(d.samples.len(), 2 * 56);
         // a movie without audio gives nothing
         assert!(pss_audio(&[0, 0, 1, 0xBA, 0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0]).is_none());
+    }
+
+    #[test]
+    fn sounds_of_a_bank_without_index() {
+        let mut flagged = |flag: u8| {
+            let mut b = block(1, 0);
+            b[1] = flag;
+            b
+        };
+        let mut msb = Vec::new();
+        msb.extend(block(1, 0));
+        msb.extend(flagged(1)); // end of sound 0
+        msb.extend(flagged(7)); // terminator
+        msb.extend(block(2, 0));
+        msb.extend(block(2, 0));
+        msb.extend(flagged(1)); // end of sound 1
+        msb.extend(flagged(7));
+        let sounds = split_sounds(&msb);
+        assert_eq!(sounds.len(), 2);
+        assert_eq!(sounds[0].len(), 32);
+        assert_eq!(sounds[1].len(), 48);
+        let clips = decode_bank_without_index(&msb, 22050).unwrap();
+        assert_eq!(clips.len(), 2);
+        assert_eq!(clips[1].1, 22050);
+        assert!(decode_bank_without_index(&[0u8; 16], 22050).is_err());
+    }
+
+    #[test]
+    fn pss_with_and_without_video() {
+        let pack = [0u8, 0, 1, 0xBA, 0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut only_private = pack.to_vec();
+        only_private.extend([0, 0, 1, 0xBD, 0, 4, 0x81, 0, 0, 0xFF]);
+        assert!(!pss_has_video(&only_private));
+        let mut with_video = only_private.clone();
+        with_video.extend([0, 0, 1, 0xE0, 0, 2, 0, 0]);
+        assert!(pss_has_video(&with_video));
     }
 
     #[test]
